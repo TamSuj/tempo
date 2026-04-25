@@ -28,6 +28,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const ZOOM_URL_RE = /https:\/\/[\w.-]*zoom\.us\/[^\s<>"')]+/i;
+const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
 
 function getAuthToken({ interactive = true } = {}) {
   return new Promise((resolve, reject) => {
@@ -70,6 +71,54 @@ function meetingLinkFor(event) {
   if (event.hangoutLink) return event.hangoutLink;
   const match = event.description?.match(ZOOM_URL_RE);
   return match ? match[0] : null;
+}
+
+function normalizeUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === "www.google.com" && parsed.pathname === "/url") {
+      const target = parsed.searchParams.get("q");
+      if (target) {
+        return normalizeUrl(target);
+      }
+    }
+    parsed.hash = "";
+    if ((parsed.protocol === "http:" && parsed.port === "80") ||
+        (parsed.protocol === "https:" && parsed.port === "443")) {
+      parsed.port = "";
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function extractUrlsFromText(text) {
+  return (text?.match(URL_RE) || []).map(normalizeUrl);
+}
+
+function extractUrlsFromEvent(event) {
+  const urls = new Set();
+  const addUrls = (items) => {
+    for (const url of items) {
+      urls.add(url);
+    }
+  };
+
+  addUrls(extractUrlsFromText(event.location));
+  addUrls(extractUrlsFromText(event.description));
+
+  if (event.hangoutLink) {
+    urls.add(normalizeUrl(event.hangoutLink));
+  }
+
+  for (const attachment of event.attachments || []) {
+    if (attachment.fileUrl) {
+      urls.add(normalizeUrl(attachment.fileUrl));
+    }
+  }
+
+  return [...urls];
 }
 
 function pickCurrentOrUpcoming(events) {
@@ -186,7 +235,7 @@ const NOTIFY_PERIOD_MIN = 1;
 const SNOOZE_ALARM_PREFIX = "tempo-snooze:";
 const SNOOZE_DELAY_MIN = 5;
 const NOTIF_ID_PREFIX = "tempo-notif:";
-const NOTIFY_LOOKAHEAD_MS = 90 * 1000;
+const NOTIFY_LOOKAHEAD_MS = 10 * 60 * 1000;
 const LAUNCH_FREQ_MIN = 2;
 const LAUNCH_MAX_TABS = 8;
 const PENDING_KEY = "pendingLaunches";
@@ -216,6 +265,13 @@ function rankUrlsForKeywords(keywords, keywordMap) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, LAUNCH_MAX_TABS)
     .map(([url]) => url);
+}
+
+function launchUrlsForEvent(event, keywordMap) {
+  const keywords = extractKeywords(event.summary);
+  const learnedUrls = rankUrlsForKeywords(keywords, keywordMap);
+  const eventUrls = extractUrlsFromEvent(event);
+  return [...new Set([...eventUrls, ...learnedUrls])].slice(0, LAUNCH_MAX_TABS);
 }
 
 function eventEndMs(event) {
@@ -252,8 +308,31 @@ async function launchPendingEvent(eventId) {
     console.warn(`Tempo launch: no pending entry for ${eventId}.`);
     return;
   }
+  const existingTabs = await chrome.tabs.query({});
+  let focusedTab = false;
+  let reusedCount = 0;
+  let openedCount = 0;
+
   for (const url of entry.urls) {
-    chrome.tabs.create({ url, active: false });
+    const normalizedUrl = normalizeUrl(url);
+    const existingTab = existingTabs.find((tab) => normalizeUrl(tab.url) === normalizedUrl);
+
+    if (existingTab?.id != null) {
+      reusedCount += 1;
+      if (!focusedTab) {
+        await chrome.tabs.update(existingTab.id, { active: true });
+        if (existingTab.windowId != null) {
+          await chrome.windows.update(existingTab.windowId, { focused: true });
+        }
+        focusedTab = true;
+      }
+      continue;
+    }
+
+    const createdTab = await chrome.tabs.create({ url, active: !focusedTab });
+    focusedTab = true;
+    openedCount += 1;
+    existingTabs.push(createdTab);
   }
   await setIconColor("green");
   delete pending[eventId];
@@ -262,7 +341,9 @@ async function launchPendingEvent(eventId) {
     [LAUNCHED_KEY]: { eventId, end: entry.end },
   });
   chrome.notifications.clear(NOTIF_ID_PREFIX + eventId);
-  console.log(`Tempo launch: opened ${entry.urls.length} tab(s) for event ${eventId}.`);
+  console.log(
+    `Tempo launch: reused ${reusedCount} tab(s) and opened ${openedCount} new tab(s) for event ${eventId}.`
+  );
 }
 
 async function snoozeEvent(eventId) {
@@ -299,11 +380,8 @@ async function tempoNotifyTick() {
   const notified = (await chrome.storage.local.get(NOTIFIED_KEY))[NOTIFIED_KEY] || {};
   if (notified[ev.id]) return;
 
-  const keywords = extractKeywords(ev.summary);
-  if (keywords.length === 0) return;
-
   const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {};
-  const urls = rankUrlsForKeywords(keywords, stored);
+  const urls = launchUrlsForEvent(ev, stored);
   if (urls.length === 0) return;
 
   await promptForEvent(ev, urls);
@@ -321,10 +399,8 @@ async function reprompFromSnooze(eventId) {
   if (!ev) return;
   if (eventEndMs(ev) <= Date.now()) return;
 
-  const keywords = extractKeywords(ev.summary);
-  if (keywords.length === 0) return;
   const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {};
-  const urls = rankUrlsForKeywords(keywords, stored);
+  const urls = launchUrlsForEvent(ev, stored);
   if (urls.length === 0) return;
 
   await promptForEvent(ev, urls);
