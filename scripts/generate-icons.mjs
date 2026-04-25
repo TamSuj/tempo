@@ -33,6 +33,40 @@ function chunk(type, data) {
   return Buffer.concat([len, typeBuf, data, crcBuf]);
 }
 
+// 6-arm asterisk = 3 capsules through origin at 60° apart (vertical, ±60°).
+const AXES = [Math.PI / 2, Math.PI / 6, -Math.PI / 6];
+const AXIS_TRIG = AXES.map((a) => [Math.cos(a), Math.sin(a)]);
+
+// Returns coverage [0..1] of pixel (px,py) by the asterisk shape, using N×N
+// supersampling for anti-aliased edges.
+function asteriskCoverage(px, py, size) {
+  const cx = size / 2;
+  const cy = size / 2;
+  // Arm tip reaches `radius + halfW` from center; keep that under size/2 so the
+  // shape never gets clipped by the toolbar's icon bounding box.
+  const radius = size * 0.30;   // capsule half-length (arm reach from center)
+  const halfW = size * 0.16;    // capsule half-width (arm thickness)
+  const halfWSq = halfW * halfW;
+  const N = 4;
+  let hits = 0;
+  for (let sy = 0; sy < N; sy++) {
+    for (let sx = 0; sx < N; sx++) {
+      const x = px + (sx + 0.5) / N - cx;
+      const y = py + (sy + 0.5) / N - cy;
+      for (const [ca, sa] of AXIS_TRIG) {
+        const along = x * ca + y * sa;
+        const perp = -x * sa + y * ca;
+        if (Math.abs(along) <= radius && Math.abs(perp) <= halfW) { hits++; break; }
+        const d1 = along - radius;
+        if (d1 * d1 + perp * perp <= halfWSq) { hits++; break; }
+        const d2 = along + radius;
+        if (d2 * d2 + perp * perp <= halfWSq) { hits++; break; }
+      }
+    }
+  }
+  return hits / (N * N);
+}
+
 function makePng(size, [r, g, b]) {
   const sig = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
   const ihdr = Buffer.alloc(13);
@@ -44,7 +78,6 @@ function makePng(size, [r, g, b]) {
   ihdr[11] = 0;
   ihdr[12] = 0;
 
-  const margin = 1;
   const rowLen = 1 + size * 4;
   const raw = Buffer.alloc(rowLen * size);
   for (let y = 0; y < size; y++) {
@@ -52,9 +85,12 @@ function makePng(size, [r, g, b]) {
     raw[off] = 0;
     for (let x = 0; x < size; x++) {
       const p = off + 1 + x * 4;
-      const inside = x >= margin && x < size - margin && y >= margin && y < size - margin;
-      if (inside) {
-        raw[p] = r; raw[p + 1] = g; raw[p + 2] = b; raw[p + 3] = 0xFF;
+      const cov = asteriskCoverage(x, y, size);
+      if (cov > 0) {
+        raw[p] = r;
+        raw[p + 1] = g;
+        raw[p + 2] = b;
+        raw[p + 3] = Math.round(cov * 255);
       }
     }
   }
