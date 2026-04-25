@@ -14,6 +14,13 @@ const errorText = $("error-text");
 const greeting = $("greeting");
 const headerPill = $("header-pill");
 const heroPill = $("hero-pill");
+const accountBtn = $("account-btn");
+const accountInitials = $("account-initials");
+const accountAvatarLg = $("account-avatar-lg");
+const accountName = $("account-name");
+const accountEmail = $("account-email");
+const accountMenu = $("account-menu");
+const signOutBtn = $("signout-btn");
 const heroTotemEl = $("hero-totem");
 const loginTotemEl = $("login-totem");
 const heroEyebrow = $("hero-eyebrow");
@@ -234,6 +241,7 @@ function renderDashboard(payload) {
   renderHero(payload);
   renderUpnext(payload);
   setState(deriveState(payload));
+  loadCurrentUser();
 }
 
 // ── Tasks (local-only, sample data per design) ──────────────────────────
@@ -325,6 +333,13 @@ launchBtn.addEventListener("click", async () => {
     await chrome.tabs.create({ url, active: !focused });
     focused = true;
   }
+  if (currentEvent?.id && currentEvent?.endMs) {
+    sendMessage({
+      type: "tempo:mark-launched",
+      eventId: currentEvent.id,
+      endMs: currentEvent.endMs,
+    }).catch(() => {});
+  }
   setState("active");
   window.close();
 });
@@ -332,6 +347,66 @@ launchBtn.addEventListener("click", async () => {
 // ── Snooze ──────────────────────────────────────────────────────────────
 snoozeBtn.addEventListener("click", () => {
   window.close();
+});
+
+// ── Account menu + sign-out ─────────────────────────────────────────────
+function deriveInitials(email) {
+  if (!email) return "··";
+  const [local, domain] = email.split("@");
+  const a = (local || "").charAt(0).toUpperCase() || "·";
+  const b = (domain || "").charAt(0).toUpperCase() || "·";
+  return a + b;
+}
+
+async function loadCurrentUser() {
+  try {
+    const res = await sendMessage({ type: "tempo:get-current-user" });
+    const email = res?.email || "";
+    const initials = deriveInitials(email);
+    accountInitials.textContent = initials;
+    accountAvatarLg.textContent = initials;
+    accountEmail.textContent = email || "Connected to Google Calendar";
+    accountName.textContent = email ? email.split("@")[0] : "Signed in";
+  } catch {
+    accountInitials.textContent = "··";
+    accountAvatarLg.textContent = "··";
+    accountName.textContent = "Signed in";
+    accountEmail.textContent = "Connected to Google Calendar";
+  }
+}
+
+function setMenuOpen(open) {
+  accountMenu.hidden = !open;
+  accountBtn.setAttribute("aria-expanded", String(open));
+}
+
+accountBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setMenuOpen(accountMenu.hidden);
+});
+
+document.addEventListener("mousedown", (e) => {
+  if (accountMenu.hidden) return;
+  if (!e.target.closest?.("[data-tempo-account]")) setMenuOpen(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !accountMenu.hidden) setMenuOpen(false);
+});
+
+signOutBtn.addEventListener("click", async () => {
+  signOutBtn.disabled = true;
+  try {
+    const res = await sendMessage({ type: "tempo:sign-out" });
+    if (!res?.ok) throw new Error(res?.error || "Sign-out failed.");
+    setMenuOpen(false);
+    setState("idle");
+    showScreen("login");
+    showError("");
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    signOutBtn.disabled = false;
+  }
 });
 
 // ── Initial load ────────────────────────────────────────────────────────

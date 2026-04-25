@@ -356,13 +356,42 @@ async function snoozeEvent(eventId) {
   console.log(`Tempo snooze: re-prompt for ${eventId} in ${SNOOZE_DELAY_MIN} min.`);
 }
 
-async function maybeRevertIcon() {
+async function syncIconToState() {
   const launched = (await chrome.storage.local.get(LAUNCHED_KEY))[LAUNCHED_KEY];
-  if (!launched) return;
-  if (Date.now() > launched.end) {
-    await setIconColor("grey");
+  if (launched && Date.now() <= launched.end) {
+    await setIconColor("green");
+    return "active";
+  }
+  if (launched) {
     await chrome.storage.local.remove(LAUNCHED_KEY);
   }
+
+  let events;
+  try {
+    events = await fetchUpcomingEvents();
+  } catch {
+    await setIconColor("grey");
+    return "idle";
+  }
+
+  const now = Date.now();
+  const liveOrSoon = events.find((e) => {
+    const s = new Date(e.start?.dateTime || e.start?.date || 0).getTime();
+    const en = new Date(e.end?.dateTime || e.end?.date || 0).getTime();
+    if (s <= now && now < en) return true;
+    if (s > now && s - now <= 60 * 60 * 1000) return true;
+    return false;
+  });
+  if (liveOrSoon) {
+    await setIconColor("blue");
+    return "ready";
+  }
+  await setIconColor("grey");
+  return "idle";
+}
+
+async function maybeRevertIcon() {
+  await syncIconToState();
 }
 
 async function tempoNotifyTick() {
@@ -434,9 +463,11 @@ chrome.notifications.onClosed.addListener(async (notifId) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(NOTIFY_ALARM, { periodInMinutes: NOTIFY_PERIOD_MIN });
+  syncIconToState().catch(() => {});
 });
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create(NOTIFY_ALARM, { periodInMinutes: NOTIFY_PERIOD_MIN });
+  syncIconToState().catch(() => {});
 });
 
 self.tempoNotifyTick = tempoNotifyTick;
@@ -530,7 +561,10 @@ async function getPopupDashboardState() {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "tempo:get-popup-state") {
     getPopupDashboardState()
-      .then((payload) => sendResponse({ ok: true, ...payload }))
+      .then(async (payload) => {
+        await syncIconToState().catch(() => {});
+        sendResponse({ ok: true, ...payload });
+      })
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -538,7 +572,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "tempo:authenticate") {
     getAuthToken({ interactive: true })
       .then(() => getPopupDashboardState())
-      .then((payload) => sendResponse({ ok: true, ...payload }))
+      .then(async (payload) => {
+        await syncIconToState().catch(() => {});
+        sendResponse({ ok: true, ...payload });
+      })
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "tempo:mark-launched") {
+    const { eventId, endMs } = message;
+    chrome.storage.local
+      .set({ [LAUNCHED_KEY]: { eventId, end: endMs } })
+      .then(() => setIconColor("green"))
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "tempo:get-current-user") {
+    chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }, (info) => {
+      sendResponse({ ok: true, email: info?.email || null });
+    });
+    return true;
+  }
+
+  if (message?.type === "tempo:sign-out") {
+    signOut()
+      .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -560,4 +621,41 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
+async function signOut() {
+  let token = null;
+  try {
+    token = await getAuthToken({ interactive: false });
+  } catch {}
+
+  if (token) {
+    await new Promise((r) => chrome.identity.removeCachedAuthToken({ token }, r));
+    try {
+      await fetch(
+        `https://accounts.google.com/o/oauth2/revoke?token=${encodeURIComponent(token)}`
+      );
+    } catch {}
+  }
+  await new Promise((r) => chrome.identity.clearAllCachedAuthTokens(r));
+
+  // Drop session-scoped state but keep learned keyword data so a future re-auth
+  // doesn't lose the user's behavior history.
+  await chrome.storage.local.remove([
+    POPUP_STATUS_KEY,
+    PENDING_KEY,
+    NOTIFIED_KEY,
+    LAUNCHED_KEY,
+  ]);
+
+  // Cancel any outstanding snooze alarms.
+  const alarms = await chrome.alarms.getAll();
+  for (const a of alarms) {
+    if (a.name.startsWith(SNOOZE_ALARM_PREFIX)) {
+      chrome.alarms.clear(a.name);
+    }
+  }
+
+  await setIconColor("grey");
+}
+
 self.getPopupDashboardState = getPopupDashboardState;
+self.signOut = signOut;

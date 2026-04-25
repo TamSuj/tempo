@@ -385,6 +385,122 @@ button {
   background: rgba(15, 23, 42, 0.04);
 }
 
+/* Avatar button (account) */
+.avatar-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--card-border);
+  padding: 0;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--holo-0), var(--holo-2));
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+.avatar-btn:hover {
+  filter: brightness(1.04);
+}
+
+/* Account menu (popover) */
+.account-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 14px;
+  width: 224px;
+  padding: 6px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.18),
+    0 2px 6px rgba(15, 23, 42, 0.06);
+  z-index: 20;
+  font-family: "Geist", sans-serif;
+}
+.account-menu[hidden] {
+  display: none;
+}
+.account-row {
+  padding: 10px 10px 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.account-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, var(--holo-0), var(--holo-2));
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+.account-info {
+  min-width: 0;
+}
+.account-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-email {
+  font-size: 11px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-divider {
+  height: 1px;
+  background: rgba(15, 23, 42, 0.06);
+  margin: 4px 4px;
+}
+.signout-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: "Geist", sans-serif;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #b91c1c;
+  text-align: left;
+  transition: background 120ms ease;
+}
+.signout-btn:hover {
+  background: rgba(185, 28, 28, 0.06);
+}
+.signout-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  background: transparent;
+}
+.account-caption {
+  padding: 4px 10px 8px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: rgba(15, 23, 42, 0.5);
+}
+
 /* Tab bar */
 .tab-bar {
   position: relative;
