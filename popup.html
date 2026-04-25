@@ -2,58 +2,169 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=380, initial-scale=1" />
     <title>Tempo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@500&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="popup.css" />
   </head>
-  <body>
-    <main class="popup-shell">
-      <section class="popup-card">
-        <header class="popup-header">
-          <div class="brand-lockup">
-            <div class="brand-mark" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M13 3L4 14h8l-1 7 9-11h-8z"></path>
-              </svg>
-            </div>
+  <body data-state="ready" data-screen="login">
+    <main class="root">
+      <!-- ────────── LOGIN ────────── -->
+      <section class="screen screen-login" id="screen-login">
+        <div class="aurora aurora-1" aria-hidden="true"></div>
+        <div class="aurora aurora-2" aria-hidden="true"></div>
+
+        <header class="login-header">
+          <div class="brand">
+            <span class="brand-dot" aria-hidden="true"></span>
             <span class="brand-name">Tempo</span>
+          </div>
+          <span class="brand-tag">v1.0</span>
+        </header>
+
+        <div class="login-hero">
+          <div class="totem-wrap totem-wrap-lg">
+            <div class="totem-halo" aria-hidden="true"></div>
+            <div class="totem totem-lg" id="login-totem" aria-hidden="true"></div>
+          </div>
+          <h1 class="login-title">Welcome to Tempo</h1>
+          <p class="login-subtitle">
+            Tempo learns your workflow and pre-loads your
+            workspace before every meeting.
+          </p>
+        </div>
+
+        <button class="signin-button" id="sign-in-button" type="button">
+          <span class="signin-icon" id="signin-icon" aria-hidden="true"></span>
+          <span class="signin-label" id="signin-label">Continue with Google</span>
+        </button>
+        <p class="signin-disclosure">
+          Tempo reads your calendar and the URLs of tabs during meetings.
+          Nothing leaves your browser.
+        </p>
+        <p class="error" id="error-text" hidden></p>
+      </section>
+
+      <!-- ────────── DASHBOARD ────────── -->
+      <section class="screen screen-dashboard" id="screen-dashboard" hidden>
+        <div class="dash-aurora" aria-hidden="true"></div>
+
+        <header class="dash-header">
+          <div class="dash-brand">
+            <span class="dash-brand-name">Tempo</span>
+            <span class="dash-greeting" id="greeting">Good morning</span>
+          </div>
+          <div class="dash-actions">
+            <span class="state-pill" id="header-pill">
+              <span class="pill-dot" aria-hidden="true"></span>
+              <span>Ready</span>
+            </span>
+            <button
+              class="icon-btn"
+              type="button"
+              title="Settings"
+              id="settings-btn"
+              aria-label="Settings"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
+                stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33h.01a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v.01a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" />
+              </svg>
+            </button>
           </div>
         </header>
 
-        <section class="hero-card" id="auth-panel">
-          <div class="blob-frame">
-            <div class="blob-mascot" id="blob" aria-hidden="true">
-              <span class="blob-shape"></span>
-              <span class="blob-outline"></span>
-              <span class="blob-eye blob-eye-left"></span>
-              <span class="blob-eye blob-eye-right"></span>
-              <span class="blob-mouth"></span>
+        <nav class="tab-bar" id="tab-bar">
+          <button class="tab is-active" data-tab="today" type="button">Today</button>
+          <button class="tab" data-tab="tasks" type="button">Tasks</button>
+        </nav>
+
+        <div class="dash-body">
+          <section class="pane pane-today" id="pane-today">
+            <article class="hero-card">
+              <div class="hero-totem-row">
+                <div class="totem totem-sm" id="hero-totem" aria-hidden="true"></div>
+                <span class="state-pill" id="hero-pill">
+                  <span class="pill-dot" aria-hidden="true"></span>
+                  <span>Ready</span>
+                </span>
+              </div>
+              <div class="hero-meta">
+                <div class="hero-eyebrow" id="hero-eyebrow">No upcoming event</div>
+                <div class="hero-title" id="hero-title">All clear for now</div>
+                <div class="hero-time" id="hero-time" hidden>
+                  <span id="hero-time-text"></span>
+                  <span class="hero-meet" id="hero-meet" hidden>
+                    <span class="dot-sep" aria-hidden="true">·</span>
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none"
+                      stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="2" y="6" width="14" height="12" rx="2" />
+                      <path d="M22 8l-6 4 6 4V8z" />
+                    </svg>
+                    <span>Google Meet</span>
+                  </span>
+                </div>
+              </div>
+              <div class="hero-actions">
+                <button class="btn btn-primary" id="launch-btn" type="button">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none"
+                    stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
+                  </svg>
+                  <span>Launch</span>
+                </button>
+                <button class="btn btn-ghost" id="snooze-btn" type="button">Snooze 5m</button>
+              </div>
+            </article>
+
+            <section class="upnext">
+              <div class="section-head">
+                <span class="section-label">Up next</span>
+                <span class="section-meta" id="upnext-date">—</span>
+              </div>
+              <div class="upnext-empty" id="upnext-empty">
+                No more events on the calendar.
+              </div>
+              <div class="upnext-rows" id="upnext-rows"></div>
+            </section>
+          </section>
+
+          <section class="pane pane-tasks" id="pane-tasks" hidden>
+            <div class="tasks-section">
+              <div class="section-head">
+                <span class="section-label">Open · <span id="tasks-open-count">0</span></span>
+              </div>
+              <div class="tasks-rows" id="tasks-open-rows"></div>
             </div>
-          </div>
+            <div class="tasks-section" id="tasks-done-section" hidden>
+              <div class="section-head">
+                <span class="section-label">Completed</span>
+              </div>
+              <div class="tasks-rows" id="tasks-done-rows"></div>
+            </div>
+            <button class="btn btn-dashed" type="button" id="add-task-btn">+ Add task</button>
+          </section>
+        </div>
 
-          <div class="copy-block">
-            <h1 class="hero-title">Welcome to Tempo!</h1>
-            <p class="hero-subtitle">Own your rhythm, find your flow.</p>
-          </div>
-
-          <button class="primary-button" id="sign-in-button" type="button">Sign in with Google</button>
-          <p class="error-text" id="error-text" hidden></p>
-        </section>
-
-        <section class="status-card" id="dashboard-panel" hidden>
-          <p class="section-label">Status</p>
-          <h2 class="status-title" id="event-title">No current calendar event</h2>
-          <p class="status-subtitle">Current event from local extension state.</p>
-
-          <div class="status-group">
-            <span class="metric-label">Keywords</span>
-            <div class="keyword-list" id="keyword-list"></div>
-            <p class="empty-copy" id="empty-copy">No keywords available yet.</p>
-          </div>
-        </section>
+        <footer class="footer-strip">
+          <span class="footer-state">
+            <span class="pill-dot" id="footer-dot" aria-hidden="true"></span>
+            <span id="footer-text">Ready · syncing calendar</span>
+          </span>
+          <span class="footer-clock" id="footer-clock">—</span>
+        </footer>
       </section>
     </main>
 
-    <script type="module" src="popup.js"></script>
+    <script src="popup.js" type="module"></script>
   </body>
 </html>

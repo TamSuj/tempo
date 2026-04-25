@@ -457,6 +457,17 @@ async function writePopupStatus(event = null) {
   });
 }
 
+function summarizeEvent(event) {
+  if (!event) return null;
+  return {
+    id: event.id,
+    summary: event.summary || null,
+    startMs: new Date(event.start?.dateTime || event.start?.date || 0).getTime(),
+    endMs: new Date(event.end?.dateTime || event.end?.date || 0).getTime(),
+    hangoutLink: event.hangoutLink || meetingLinkFor(event) || null,
+  };
+}
+
 async function getPopupDashboardState() {
   let token;
   try {
@@ -467,6 +478,8 @@ async function getPopupDashboardState() {
       state: "idle",
       currentKeyword: null,
       observedUrls: [],
+      currentEvent: null,
+      upcomingEvents: [],
     };
   }
 
@@ -482,12 +495,20 @@ async function getPopupDashboardState() {
           .map(([url, count]) => ({ url, count }))
       : [];
 
+    const upcomingEvents = events
+      .filter((e) => e.id !== currentEvent?.id)
+      .map(summarizeEvent)
+      .filter((e) => e && e.startMs > Date.now())
+      .slice(0, 4);
+
     return {
       authenticated: true,
       state: "active",
       currentKeyword,
       observedUrls,
       eventTitle: currentEvent?.summary || null,
+      currentEvent: summarizeEvent(currentEvent),
+      upcomingEvents,
       tokenPresent: Boolean(token),
     };
   } catch (err) {
@@ -498,6 +519,8 @@ async function getPopupDashboardState() {
       currentKeyword: null,
       observedUrls: [],
       eventTitle: null,
+      currentEvent: null,
+      upcomingEvents: [],
       tokenPresent: Boolean(token),
       error: err.message,
     };
