@@ -241,6 +241,7 @@ const LAUNCH_MAX_TABS = 8;
 const PENDING_KEY = "pendingLaunches";
 const NOTIFIED_KEY = "notifiedEventIds";
 const LAUNCHED_KEY = "launchedEvent";
+const POPUP_STATUS_KEY = "popupStatus";
 
 function pickEventStartingSoon(events, withinMs) {
   const now = Date.now();
@@ -441,3 +442,99 @@ chrome.runtime.onStartup.addListener(() => {
 self.tempoNotifyTick = tempoNotifyTick;
 self.launchPendingEvent = launchPendingEvent;
 self.snoozeEvent = snoozeEvent;
+
+function firstKeywordFromEvent(event) {
+  return extractKeywords(event?.summary || "")[0] || null;
+}
+
+async function writePopupStatus(event = null) {
+  await chrome.storage.local.set({
+    [POPUP_STATUS_KEY]: {
+      title: event?.summary || null,
+      keywords: extractKeywords(event?.summary || ""),
+      updatedAt: Date.now(),
+    },
+  });
+}
+
+async function getPopupDashboardState() {
+  let token;
+  try {
+    token = await getAuthToken({ interactive: false });
+  } catch {
+    return {
+      authenticated: false,
+      state: "idle",
+      currentKeyword: null,
+      observedUrls: [],
+    };
+  }
+
+  try {
+    const events = await fetchUpcomingEvents();
+    const currentEvent = pickCurrentOrUpcoming(events);
+    const currentKeyword = firstKeywordFromEvent(currentEvent);
+    await writePopupStatus(currentEvent);
+    const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {};
+    const observedUrls = currentKeyword
+      ? Object.entries(stored[currentKeyword] || {})
+          .sort((a, b) => b[1] - a[1])
+          .map(([url, count]) => ({ url, count }))
+      : [];
+
+    return {
+      authenticated: true,
+      state: "active",
+      currentKeyword,
+      observedUrls,
+      eventTitle: currentEvent?.summary || null,
+      tokenPresent: Boolean(token),
+    };
+  } catch (err) {
+    console.warn("Tempo popup: failed to build dashboard state:", err.message);
+    return {
+      authenticated: true,
+      state: "active",
+      currentKeyword: null,
+      observedUrls: [],
+      eventTitle: null,
+      tokenPresent: Boolean(token),
+      error: err.message,
+    };
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "tempo:get-popup-state") {
+    getPopupDashboardState()
+      .then((payload) => sendResponse({ ok: true, ...payload }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "tempo:authenticate") {
+    getAuthToken({ interactive: true })
+      .then(() => getPopupDashboardState())
+      .then((payload) => sendResponse({ ok: true, ...payload }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "tempo:refresh-popup-status") {
+    fetchUpcomingEvents()
+      .then((events) => {
+        const currentEvent = pickCurrentOrUpcoming(events);
+        return writePopupStatus(currentEvent).then(() => ({
+          title: currentEvent?.summary || null,
+          keywords: extractKeywords(currentEvent?.summary || ""),
+        }));
+      })
+      .then((payload) => sendResponse({ ok: true, ...payload }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  return false;
+});
+
+self.getPopupDashboardState = getPopupDashboardState;

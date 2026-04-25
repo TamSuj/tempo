@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tempo</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup-shell">
+      <section class="popup-card">
+        <header class="popup-header">
+          <div class="brand-lockup">
+            <div class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M13 3L4 14h8l-1 7 9-11h-8z"></path>
+              </svg>
+            </div>
+            <span class="brand-name">Tempo</span>
+          </div>
+        </header>
+
+        <section class="hero-card" id="auth-panel">
+          <div class="blob-frame">
+            <div class="blob-mascot" id="blob" aria-hidden="true">
+              <span class="blob-shape"></span>
+              <span class="blob-outline"></span>
+              <span class="blob-eye blob-eye-left"></span>
+              <span class="blob-eye blob-eye-right"></span>
+              <span class="blob-mouth"></span>
+            </div>
+          </div>
+
+          <div class="copy-block">
+            <h1 class="hero-title">Welcome to Tempo!</h1>
+            <p class="hero-subtitle">Own your rhythm, find your flow.</p>
+          </div>
+
+          <button class="primary-button" id="sign-in-button" type="button">Sign in with Google</button>
+          <p class="error-text" id="error-text" hidden></p>
+        </section>
+
+        <section class="status-card" id="dashboard-panel" hidden>
+          <p class="section-label">Status</p>
+          <h2 class="status-title" id="event-title">No current calendar event</h2>
+          <p class="status-subtitle">Current event from local extension state.</p>
+
+          <div class="status-group">
+            <span class="metric-label">Keywords</span>
+            <div class="keyword-list" id="keyword-list"></div>
+            <p class="empty-copy" id="empty-copy">No keywords available yet.</p>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
