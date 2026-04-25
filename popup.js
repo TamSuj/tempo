@@ -48,6 +48,7 @@ const tasksDoneSection = $("tasks-done-section");
 
 let currentEvent = null;
 let observedUrls = [];
+let currentLaunchUrls = [];
 
 // ── Totem SVG renderer ──────────────────────────────────────────────────
 function totemSvg(state) {
@@ -182,12 +183,14 @@ function deriveState(payload) {
 
 function renderHero(payload) {
   currentEvent = payload?.currentEvent || null;
+  currentLaunchUrls = payload?.currentLaunchUrls || [];
   if (!currentEvent) {
     heroEyebrow.textContent = "All clear";
     heroTitle.textContent = "No upcoming event";
     heroTime.hidden = true;
     heroMeet.hidden = true;
     launchBtn.disabled = true;
+    snoozeBtn.disabled = true;
     return;
   }
   const now = Date.now();
@@ -202,7 +205,8 @@ function renderHero(payload) {
   heroTime.hidden = false;
   heroTimeText.textContent = `${fmtTime(currentEvent.startMs)} – ${fmtTime(currentEvent.endMs)}`;
   heroMeet.hidden = !currentEvent.hangoutLink;
-  launchBtn.disabled = !currentEvent.hangoutLink && observedUrls.length === 0;
+  launchBtn.disabled = currentLaunchUrls.length === 0;
+  snoozeBtn.disabled = Date.now() >= currentEvent.startMs;
 }
 
 function renderUpnext(payload) {
@@ -321,6 +325,15 @@ signInButton.addEventListener("click", handleSignIn);
 
 // ── Launch ──────────────────────────────────────────────────────────────
 launchBtn.addEventListener("click", async () => {
+  if (!currentEvent?.id) return;
+  try {
+    const response = await sendMessage({ type: "tempo:launch-event", eventId: currentEvent.id });
+    if (!response?.ok) throw new Error(response?.error || "Launch failed.");
+    setState("active");
+    window.close();
+  } catch (err) {
+    showError(err.message || String(err));
+  }
   if (!currentEvent && observedUrls.length === 0) return;
   const urls = [];
   if (currentEvent?.hangoutLink) urls.push(currentEvent.hangoutLink);
@@ -345,8 +358,15 @@ launchBtn.addEventListener("click", async () => {
 });
 
 // ── Snooze ──────────────────────────────────────────────────────────────
-snoozeBtn.addEventListener("click", () => {
-  window.close();
+snoozeBtn.addEventListener("click", async () => {
+  if (!currentEvent?.id) return;
+  try {
+    const response = await sendMessage({ type: "tempo:snooze-event", eventId: currentEvent.id });
+    if (!response?.ok) throw new Error(response?.error || "Snooze failed.");
+    window.close();
+  } catch (err) {
+    showError(err.message || String(err));
+  }
 });
 
 // ── Account menu + sign-out ─────────────────────────────────────────────

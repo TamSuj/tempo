@@ -30,7 +30,7 @@ const CALENDAR_API = "https://www.googleapis.com/calendar/v3/calendars/primary/e
 const ZOOM_URL_RE = /https:\/\/[\w.-]*zoom\.us\/[^\s<>"')]+/i;
 const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
 
-function getAuthToken({ interactive = true } = {}) {
+function getAuthToken({ interactive = false } = {}) {
   return new Promise((resolve, reject) => {
     chrome.identity.getAuthToken({ interactive }, (token) => {
       if (chrome.runtime.lastError || !token) {
@@ -42,8 +42,8 @@ function getAuthToken({ interactive = true } = {}) {
   });
 }
 
-async function fetchUpcomingEvents() {
-  const token = await getAuthToken();
+async function fetchUpcomingEvents({ interactive = false } = {}) {
+  const token = await getAuthToken({ interactive });
   const now = new Date();
   const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const params = new URLSearchParams({
@@ -252,6 +252,16 @@ function pickEventStartingSoon(events, withinMs) {
   return null;
 }
 
+function pickLaunchableActiveEvent(events) {
+  const now = Date.now();
+  for (const ev of events) {
+    const start = new Date(ev.start?.dateTime || ev.start?.date || 0).getTime();
+    const end = eventEndMs(ev);
+    if (start <= now && now < end) return ev;
+  }
+  return null;
+}
+
 function rankUrlsForKeywords(keywords, keywordMap) {
   const totals = new Map();
   for (const kw of keywords) {
@@ -269,10 +279,14 @@ function rankUrlsForKeywords(keywords, keywordMap) {
 }
 
 function launchUrlsForEvent(event, keywordMap) {
+  const eventUrls = extractUrlsFromEvent(event);
+  if (eventUrls.length > 0) {
+    return eventUrls.slice(0, LAUNCH_MAX_TABS);
+  }
+
   const keywords = extractKeywords(event.summary);
   const learnedUrls = rankUrlsForKeywords(keywords, keywordMap);
-  const eventUrls = extractUrlsFromEvent(event);
-  return [...new Set([...eventUrls, ...learnedUrls])].slice(0, LAUNCH_MAX_TABS);
+  return learnedUrls.slice(0, LAUNCH_MAX_TABS);
 }
 
 function eventEndMs(event) {
@@ -309,31 +323,33 @@ async function launchPendingEvent(eventId) {
     console.warn(`Tempo launch: no pending entry for ${eventId}.`);
     return;
   }
-  const existingTabs = await chrome.tabs.query({});
-  let focusedTab = false;
-  let reusedCount = 0;
+  const win = await chrome.windows.getLastFocused();
+  const activeTabs = win?.id != null
+    ? await chrome.tabs.query({ windowId: win.id, active: true })
+    : [];
+  let insertIndex = activeTabs[0]?.index;
   let openedCount = 0;
 
   for (const url of entry.urls) {
-    const normalizedUrl = normalizeUrl(url);
-    const existingTab = existingTabs.find((tab) => normalizeUrl(tab.url) === normalizedUrl);
+    const createProperties = {
+      url,
+      active: openedCount === 0,
+    };
 
-    if (existingTab?.id != null) {
-      reusedCount += 1;
-      if (!focusedTab) {
-        await chrome.tabs.update(existingTab.id, { active: true });
-        if (existingTab.windowId != null) {
-          await chrome.windows.update(existingTab.windowId, { focused: true });
-        }
-        focusedTab = true;
-      }
-      continue;
+    if (win?.id != null) {
+      createProperties.windowId = win.id;
+    }
+    if (typeof insertIndex === "number") {
+      insertIndex += 1;
+      createProperties.index = insertIndex;
     }
 
-    const createdTab = await chrome.tabs.create({ url, active: !focusedTab });
-    focusedTab = true;
+    await chrome.tabs.create(createProperties);
     openedCount += 1;
-    existingTabs.push(createdTab);
+  }
+
+  if (win?.id != null) {
+    await chrome.windows.update(win.id, { focused: true });
   }
   await setIconColor("green");
   delete pending[eventId];
@@ -342,9 +358,30 @@ async function launchPendingEvent(eventId) {
     [LAUNCHED_KEY]: { eventId, end: entry.end },
   });
   chrome.notifications.clear(NOTIF_ID_PREFIX + eventId);
-  console.log(
-    `Tempo launch: reused ${reusedCount} tab(s) and opened ${openedCount} new tab(s) for event ${eventId}.`
-  );
+  console.log(`Tempo launch: opened ${openedCount} new tab(s) for event ${eventId}.`);
+}
+
+async function findEventById(eventId) {
+  const events = await fetchUpcomingEvents({ interactive: false });
+  return events.find((event) => event.id === eventId) || null;
+}
+
+async function launchEventNow(eventId) {
+  const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {};
+  const event = await findEventById(eventId);
+  if (!event) {
+    throw new Error(`Tempo could not find event ${eventId}.`);
+  }
+
+  const urls = launchUrlsForEvent(event, stored);
+  if (urls.length === 0) {
+    throw new Error("This event has no launchable URLs.");
+  }
+
+  const pending = (await chrome.storage.local.get(PENDING_KEY))[PENDING_KEY] || {};
+  pending[eventId] = { urls, end: eventEndMs(event) };
+  await chrome.storage.local.set({ [PENDING_KEY]: pending });
+  await launchPendingEvent(eventId);
 }
 
 async function snoozeEvent(eventId) {
@@ -397,14 +434,14 @@ async function maybeRevertIcon() {
 async function tempoNotifyTick() {
   let events;
   try {
-    events = await fetchUpcomingEvents();
+    events = await fetchUpcomingEvents({ interactive: false });
   } catch (err) {
     console.warn("Tempo notify: calendar fetch failed:", err.message);
     return;
   }
   await maybeRevertIcon();
 
-  const ev = pickEventStartingSoon(events, NOTIFY_LOOKAHEAD_MS);
+  const ev = pickEventStartingSoon(events, NOTIFY_LOOKAHEAD_MS) || pickLaunchableActiveEvent(events);
   if (!ev) return;
 
   const notified = (await chrome.storage.local.get(NOTIFIED_KEY))[NOTIFIED_KEY] || {};
@@ -420,7 +457,7 @@ async function tempoNotifyTick() {
 async function reprompFromSnooze(eventId) {
   let events;
   try {
-    events = await fetchUpcomingEvents();
+    events = await fetchUpcomingEvents({ interactive: false });
   } catch (err) {
     console.warn("Tempo snooze: calendar fetch failed:", err.message);
     return;
@@ -449,6 +486,12 @@ chrome.notifications.onButtonClicked.addListener((notifId, btnIdx) => {
   const eventId = notifId.slice(NOTIF_ID_PREFIX.length);
   if (btnIdx === 0) launchPendingEvent(eventId);
   else if (btnIdx === 1) snoozeEvent(eventId);
+});
+
+chrome.notifications.onClicked.addListener((notifId) => {
+  if (!notifId.startsWith(NOTIF_ID_PREFIX)) return;
+  const eventId = notifId.slice(NOTIF_ID_PREFIX.length);
+  launchPendingEvent(eventId);
 });
 
 chrome.notifications.onClosed.addListener(async (notifId) => {
@@ -515,11 +558,12 @@ async function getPopupDashboardState() {
   }
 
   try {
-    const events = await fetchUpcomingEvents();
+    const events = await fetchUpcomingEvents({ interactive: false });
     const currentEvent = pickCurrentOrUpcoming(events);
     const currentKeyword = firstKeywordFromEvent(currentEvent);
     await writePopupStatus(currentEvent);
     const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {};
+    const currentLaunchUrls = currentEvent ? launchUrlsForEvent(currentEvent, stored) : [];
     const observedUrls = currentKeyword
       ? Object.entries(stored[currentKeyword] || {})
           .sort((a, b) => b[1] - a[1])
@@ -539,6 +583,7 @@ async function getPopupDashboardState() {
       observedUrls,
       eventTitle: currentEvent?.summary || null,
       currentEvent: summarizeEvent(currentEvent),
+      currentLaunchUrls,
       upcomingEvents,
       tokenPresent: Boolean(token),
     };
@@ -551,6 +596,7 @@ async function getPopupDashboardState() {
       observedUrls: [],
       eventTitle: null,
       currentEvent: null,
+      currentLaunchUrls: [],
       upcomingEvents: [],
       tokenPresent: Boolean(token),
       error: err.message,
@@ -605,7 +651,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "tempo:refresh-popup-status") {
-    fetchUpcomingEvents()
+    fetchUpcomingEvents({ interactive: false })
       .then((events) => {
         const currentEvent = pickCurrentOrUpcoming(events);
         return writePopupStatus(currentEvent).then(() => ({
@@ -614,6 +660,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }));
       })
       .then((payload) => sendResponse({ ok: true, ...payload }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "tempo:launch-event") {
+    launchEventNow(message.eventId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "tempo:snooze-event") {
+    snoozeEvent(message.eventId)
+      .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -659,3 +719,4 @@ async function signOut() {
 
 self.getPopupDashboardState = getPopupDashboardState;
 self.signOut = signOut;
+self.launchEventNow = launchEventNow;
