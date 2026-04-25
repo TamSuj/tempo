@@ -1,5 +1,150 @@
 console.log("Extension Active");
 
+// ─── Gemini + history-based learning ──────────────────────────────────────
+// NOTE: hardcoded for hackathon use only. Do not ship to prod with the
+// key in source — proxy through a backend instead.
+const GEMINI_API_KEY = "AIzaSyBy24PrHulxOSkSYNmbZrILwxoOwbB-T58";
+const GEMINI_MODEL_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+
+const HISTORY_NOISE_PATTERNS = [
+  /^chrome:\/\//i,
+  /^chrome-extension:\/\//i,
+  /^about:/i,
+  /^edge:\/\//i,
+  /(^|\.)google\.com\/search/i,
+  /^https?:\/\/mail\.google\.com/i,
+  /^https?:\/\/calendar\.google\.com/i,
+  /^https?:\/\/(www\.)?google\.com\/?(\?.*)?$/i,
+  /^https?:\/\/accounts\.google\.com/i,
+];
+
+function isNoiseUrl(url) {
+  if (!url) return true;
+  return HISTORY_NOISE_PATTERNS.some((re) => re.test(url));
+}
+
+function domainFromUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.startsWith("www.") ? host.slice(4) : host;
+  } catch {
+    return null;
+  }
+}
+
+async function categorizeEvent(eventTitle) {
+  if (!eventTitle) {
+    console.log("[categorizeEvent] empty title, skipping");
+    return null;
+  }
+  const prompt =
+    `Categorize this calendar event title into a single, lowercase, ` +
+    `one-word category (e.g., finance, design, engineering, sync, personal): ` +
+    `${eventTitle}`;
+
+  try {
+    const res = await fetch(`${GEMINI_MODEL_URL}?key=${GEMINI_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 8 },
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.warn(`[categorizeEvent] HTTP ${res.status}:`, errText);
+      return null;
+    }
+    const data = await res.json();
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const category = raw
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)[0];
+    console.log(`[categorizeEvent] "${eventTitle}" → "${category}"`);
+    return category || null;
+  } catch (err) {
+    console.warn("[categorizeEvent] failed:", err.message);
+    return null;
+  }
+}
+
+async function learnFromHistory(category, meetingStartTime, meetingEndTime) {
+  if (!category) {
+    console.log("[learnFromHistory] no category, skipping");
+    return [];
+  }
+  if (
+    typeof meetingStartTime !== "number" ||
+    typeof meetingEndTime !== "number" ||
+    meetingEndTime <= meetingStartTime
+  ) {
+    console.warn("[learnFromHistory] invalid time window:", {
+      meetingStartTime,
+      meetingEndTime,
+    });
+    return [];
+  }
+
+  const items = await new Promise((resolve) => {
+    chrome.history.search(
+      {
+        text: "",
+        startTime: meetingStartTime,
+        endTime: meetingEndTime,
+        maxResults: 1000,
+      },
+      (results) => resolve(results || [])
+    );
+  });
+
+  console.log(
+    `[learnFromHistory] category="${category}" window=[${new Date(
+      meetingStartTime
+    ).toISOString()}..${new Date(meetingEndTime).toISOString()}] items=${items.length}`
+  );
+
+  const counts = new Map();
+  for (const item of items) {
+    if (isNoiseUrl(item.url)) continue;
+    if (
+      typeof item.lastVisitTime === "number" &&
+      (item.lastVisitTime < meetingStartTime || item.lastVisitTime > meetingEndTime)
+    ) {
+      continue;
+    }
+    const domain = domainFromUrl(item.url);
+    if (!domain) continue;
+    counts.set(domain, (counts.get(domain) || 0) + (item.visitCount || 1));
+  }
+
+  const top3 = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([domain]) => domain);
+
+  console.log(`[learnFromHistory] top domains for "${category}":`, top3);
+
+  try {
+    const stored = (await chrome.storage.local.get(category))[category] || [];
+    const merged = [...new Set([...top3, ...stored])].slice(0, 3);
+    await chrome.storage.local.set({ [category]: merged });
+    console.log(`[learnFromHistory] saved {${category}: ${JSON.stringify(merged)}}`);
+    return merged;
+  } catch (err) {
+    console.warn("[learnFromHistory] storage write failed:", err.message);
+    return top3;
+  }
+}
+
+// Expose for manual testing in the service-worker DevTools console.
+self.categorizeEvent = categorizeEvent;
+self.learnFromHistory = learnFromHistory;
+
+
 const ICON_STATES = ["grey", "blue", "green"];
 const ICON_SIZES = [16, 32, 48, 128];
 

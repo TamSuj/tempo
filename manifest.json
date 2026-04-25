@@ -8,10 +8,12 @@
     "tabs",
     "storage",
     "alarms",
-    "notifications"
+    "notifications",
+    "history"
   ],
   "host_permissions": [
-    "https://www.googleapis.com/*"
+    "https://www.googleapis.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "oauth2": {
     "client_id": "659687020686-se4697n5evlijst7q8v8qapa2n1ilcp2.apps.googleusercontent.com",
