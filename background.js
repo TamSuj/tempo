@@ -988,27 +988,12 @@ async function syncIconToState() {
     }
   };
 
-  // Stale-LAUNCHED_KEY purge: green icon is gated on a still-running event.
-  // If the stored end has passed (or end is missing/malformed), drop the key
-  // so the icon can fall through to ready/idle below instead of sticking green.
   const launched = await readStorageKey(LAUNCHED_KEY);
   const now = Date.now();
-  const launchedStillActive =
-    launched
-    && Number.isFinite(launched.start)
-    && Number.isFinite(launched.end)
-    && launched.start <= now
-    && now < launched.end;
-  if (launchedStillActive) {
+  if (launched && Number.isFinite(launched.start) && Number.isFinite(launched.end) && launched.start <= now && now < launched.end) {
+    // Keep launch tracking alive, but do not require it to show the active state.
     await applyIcon("active");
     return "active";
-  }
-  if (launched) {
-    // Either expired (Date.now() > end) or malformed (no/NaN end) — clear it.
-    await chrome.storage.local.remove(LAUNCHED_KEY).catch((err) =>
-      console.warn("[icon] failed to clear stale LAUNCHED_KEY:", err?.message)
-    );
-    console.log("[icon] cleared stale LAUNCHED_KEY (event ended or malformed)");
   }
 
   let events;
@@ -1019,17 +1004,26 @@ async function syncIconToState() {
     return "idle";
   }
 
-  const liveOrSoon = events.find((e) => {
-    const s = eventStartMs(e);
-    const en = eventEndMs(e);
-    if (Number.isFinite(s) && Number.isFinite(en) && s <= now && now < en) return true;
-    if (Number.isFinite(s) && s > now && s - now <= READY_HORIZON_MS) return true;
-    return false;
-  });
-  if (liveOrSoon) {
+  const liveEvent = findCurrentlyActiveEvent(events);
+  if (liveEvent) {
+    await applyIcon("active");
+    return "active";
+  }
+
+  const nextEvent = findNextUpcomingEvent(events);
+  const nextStart = eventStartMs(nextEvent);
+  if (Number.isFinite(nextStart) && nextStart - now <= READY_HORIZON_MS) {
     await applyIcon("ready");
     return "ready";
   }
+
+  if (launched) {
+    await chrome.storage.local.remove(LAUNCHED_KEY).catch((err) =>
+      console.warn("[icon] failed to clear stale LAUNCHED_KEY:", err?.message)
+    );
+    console.log("[icon] cleared stale LAUNCHED_KEY (event ended or malformed)");
+  }
+
   await applyIcon("idle");
   return "idle";
 }
