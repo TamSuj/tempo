@@ -1,11 +1,11 @@
 console.log("Extension Active");
 
 // ─── Gemini + history-based learning ──────────────────────────────────────
-// NOTE: hardcoded for hackathon use only. Do not ship to prod with the
-// key in source — proxy through a backend instead.
-const GEMINI_API_KEY = "AIzaSyBy24PrHulxOSkSYNmbZrILwxoOwbB-T58";
 const GEMINI_MODEL_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+const GEMINI_TIMEOUT_MS = 10_000;
+const LEARNING_CAPTURE_LIMIT = 60;
+const LEARNING_BUCKET_LIMIT = 50;
 
 const HISTORY_NOISE_PATTERNS = [
   /^chrome:\/\//i,
@@ -24,6 +24,24 @@ function isNoiseUrl(url) {
   return HISTORY_NOISE_PATTERNS.some((re) => re.test(url));
 }
 
+const LEARNING_NOISE_PATTERNS = [
+  /(^|\.)google\.com\/search/i,
+  /^https?:\/\/mail\.google\.com/i,
+  /(^|\.)doubleclick\.net/i,
+  /(^|\.)googlesyndication\.com/i,
+  /(^|\.)googleadservices\.com/i,
+  /(^|\.)adservice\.google\./i,
+  /(^|\.)adsystem\.com/i,
+  /(^|\.)taboola\.com/i,
+  /(^|\.)outbrain\.com/i,
+];
+
+function isLearningNoiseUrl(url) {
+  if (!url) return true;
+  if (isNoiseUrl(url)) return true;
+  return LEARNING_NOISE_PATTERNS.some((re) => re.test(url));
+}
+
 function domainFromUrl(url) {
   try {
     const host = new URL(url).hostname.toLowerCase();
@@ -33,9 +51,59 @@ function domainFromUrl(url) {
   }
 }
 
+function sanitizeLearningUrl(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(normalizeUrl(url));
+    if (!/^https?:$/i.test(parsed.protocol)) return null;
+    parsed.search = "";
+    parsed.hash = "";
+    const sanitized = parsed.toString();
+    if (isLearningNoiseUrl(sanitized)) return null;
+    return sanitized;
+  } catch {
+    return null;
+  }
+}
+
+function trimKeywordBucket(bucket, maxUrls = LEARNING_BUCKET_LIMIT) {
+  return Object.fromEntries(
+    Object.entries(bucket || {})
+      .filter(([, count]) => Number.isFinite(count) && count > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, maxUrls)
+  );
+}
+
+async function getGeminiApiKey() {
+  try {
+    const result = await chrome.storage.local.get("geminiApiKey");
+    const key = typeof result.geminiApiKey === "string" ? result.geminiApiKey.trim() : "";
+    return key || null;
+  } catch (err) {
+    console.warn("[categorizeEvent] failed to read geminiApiKey:", err.message);
+    return null;
+  }
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function categorizeEvent(eventTitle) {
   if (!eventTitle) {
     console.log("[categorizeEvent] empty title, skipping");
+    return null;
+  }
+  const apiKey = await getGeminiApiKey();
+  if (!apiKey) {
+    console.log("[categorizeEvent] no geminiApiKey in storage, falling back to keyword matching");
     return null;
   }
   const prompt =
@@ -44,14 +112,18 @@ async function categorizeEvent(eventTitle) {
     `${eventTitle}`;
 
   try {
-    const res = await fetch(`${GEMINI_MODEL_URL}?key=${GEMINI_API_KEY}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 8 },
-      }),
-    });
+    const res = await fetchWithTimeout(
+      `${GEMINI_MODEL_URL}?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8 },
+        }),
+      },
+      GEMINI_TIMEOUT_MS
+    );
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       console.warn(`[categorizeEvent] HTTP ${res.status}:`, errText);
@@ -109,14 +181,15 @@ async function learnFromHistory(category, meetingStartTime, meetingEndTime) {
 
   const counts = new Map();
   for (const item of items) {
-    if (isNoiseUrl(item.url)) continue;
+    const sanitizedUrl = sanitizeLearningUrl(item.url);
+    if (!sanitizedUrl) continue;
     if (
       typeof item.lastVisitTime === "number" &&
       (item.lastVisitTime < meetingStartTime || item.lastVisitTime > meetingEndTime)
     ) {
       continue;
     }
-    const domain = domainFromUrl(item.url);
+    const domain = domainFromUrl(sanitizedUrl);
     if (!domain) continue;
     counts.set(domain, (counts.get(domain) || 0) + (item.visitCount || 1));
   }
@@ -343,21 +416,25 @@ async function recordTabsForActiveEvent() {
   const keywords = extractKeywords(ev.summary);
   if (keywords.length === 0) return;
 
-  const urls = await getActiveWindowTabUrls();
-  if (urls.length === 0) return;
+  const sanitizedUrls = [...new Set(
+    (await getActiveWindowTabUrls())
+      .map(sanitizeLearningUrl)
+      .filter(Boolean)
+  )].slice(0, LEARNING_CAPTURE_LIMIT);
+  if (sanitizedUrls.length === 0) return;
 
   const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {};
   for (const kw of keywords) {
     const bucket = stored[kw] || {};
-    for (const url of urls) {
+    for (const url of sanitizedUrls) {
       bucket[url] = (bucket[url] || 0) + 1;
     }
-    stored[kw] = bucket;
+    stored[kw] = trimKeywordBucket(bucket);
   }
   await chrome.storage.local.set({ [STORAGE_KEY]: stored });
 
   console.log(
-    `Tempo learn: "${ev.summary}" → keywords [${keywords.join(", ")}], recorded ${urls.length} tab(s).`
+    `Tempo learn: "${ev.summary}" → keywords [${keywords.join(", ")}], recorded ${sanitizedUrls.length} tab(s).`
   );
 }
 
@@ -383,10 +460,24 @@ const NOTIF_ID_PREFIX = "tempo-notif:";
 const NOTIFY_LOOKAHEAD_MS = 10 * 60 * 1000;
 const LAUNCH_FREQ_MIN = 2;
 const LAUNCH_MAX_TABS = 8;
+const LAUNCH_DEBOUNCE_MS = 30_000;
 const PENDING_KEY = "pendingLaunches";
 const NOTIFIED_KEY = "notifiedEventIds";
 const LAUNCHED_KEY = "launchedEvent";
 const POPUP_STATUS_KEY = "popupStatus";
+const recentLaunches = new Map();
+
+function shouldSkipDebouncedLaunch(eventId) {
+  if (!eventId) return true;
+  const now = Date.now();
+  for (const [id, ts] of recentLaunches.entries()) {
+    if (now - ts > LAUNCH_DEBOUNCE_MS) recentLaunches.delete(id);
+  }
+  const previous = recentLaunches.get(eventId);
+  if (previous && now - previous < LAUNCH_DEBOUNCE_MS) return true;
+  recentLaunches.set(eventId, now);
+  return false;
+}
 
 function pickEventStartingSoon(events, withinMs) {
   const now = Date.now();
@@ -462,6 +553,10 @@ async function promptForEvent(event, urls) {
 }
 
 async function launchPendingEvent(eventId) {
+  if (shouldSkipDebouncedLaunch(eventId)) {
+    console.log(`Tempo launch: skipped duplicate launch for ${eventId}.`);
+    return;
+  }
   const pending = (await chrome.storage.local.get(PENDING_KEY))[PENDING_KEY] || {};
   const entry = pending[eventId];
   if (!entry) {
@@ -506,6 +601,10 @@ async function launchPendingEvent(eventId) {
   console.log(`Tempo launch: opened ${openedCount} new tab(s) for event ${eventId}.`);
 }
 
+async function executeLaunchFromBackground(eventId) {
+  await launchPendingEvent(eventId);
+}
+
 async function findEventById(eventId) {
   const events = await fetchUpcomingEvents({ interactive: false });
   return events.find((event) => event.id === eventId) || null;
@@ -526,7 +625,7 @@ async function launchEventNow(eventId) {
   const pending = (await chrome.storage.local.get(PENDING_KEY))[PENDING_KEY] || {};
   pending[eventId] = { urls, end: eventEndMs(event) };
   await chrome.storage.local.set({ [PENDING_KEY]: pending });
-  await launchPendingEvent(eventId);
+  await executeLaunchFromBackground(eventId);
 }
 
 async function snoozeEvent(eventId) {
@@ -629,14 +728,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.notifications.onButtonClicked.addListener((notifId, btnIdx) => {
   if (!notifId.startsWith(NOTIF_ID_PREFIX)) return;
   const eventId = notifId.slice(NOTIF_ID_PREFIX.length);
-  if (btnIdx === 0) launchPendingEvent(eventId);
+  if (btnIdx === 0) executeLaunchFromBackground(eventId);
   else if (btnIdx === 1) snoozeEvent(eventId);
 });
 
 chrome.notifications.onClicked.addListener((notifId) => {
   if (!notifId.startsWith(NOTIF_ID_PREFIX)) return;
   const eventId = notifId.slice(NOTIF_ID_PREFIX.length);
-  launchPendingEvent(eventId);
+  executeLaunchFromBackground(eventId);
 });
 
 chrome.notifications.onClosed.addListener(async (notifId) => {
@@ -772,10 +871,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "tempo:mark-launched") {
-    const { eventId, endMs } = message;
-    chrome.storage.local
-      .set({ [LAUNCHED_KEY]: { eventId, end: endMs } })
-      .then(() => setIconColor("green"))
+    executeLaunchFromBackground(message.eventId)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
