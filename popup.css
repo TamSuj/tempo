@@ -109,6 +109,46 @@ button {
   50% { opacity: 0.78; transform: scale(1.04); }
 }
 
+/* Status pulsate (Ready) — soft blue breathing glow */
+@keyframes statusPulseReady {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 rgba(47, 139, 246, 0.45),
+      0 0 14px 2px rgba(47, 139, 246, 0.30);
+  }
+  50% {
+    box-shadow:
+      0 0 0 6px rgba(47, 139, 246, 0),
+      0 0 22px 6px rgba(47, 139, 246, 0.55);
+  }
+}
+
+/* Status dot pulse (Ready) — synced with the surface */
+@keyframes statusDotPulseReady {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(47, 139, 246, 0.55);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(47, 139, 246, 0);
+    transform: scale(1.18);
+  }
+}
+
+/* Status glow (Active) — steady green tint */
+@keyframes statusGlowActive {
+  0%, 100% {
+    box-shadow:
+      0 0 14px 2px rgba(45, 190, 90, 0.40),
+      inset 0 0 12px rgba(45, 190, 90, 0.10);
+  }
+  50% {
+    box-shadow:
+      0 0 18px 4px rgba(45, 190, 90, 0.55),
+      inset 0 0 14px rgba(45, 190, 90, 0.16);
+  }
+}
+
 /* ── Root ── */
 .root {
   position: relative;
@@ -407,24 +447,70 @@ button {
   filter: brightness(1.04);
 }
 
-/* Account menu (popover) */
+/* Account / Sign-out layer — must sit above the entire dashboard.
+   The popover is rendered inside a full-popup overlay so the dimmed
+   backdrop captures outside-clicks and the panel can never be buried
+   under hero cards, totems, or aurora layers. */
 .account-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 14px;
-  width: 224px;
-  padding: 6px;
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 12px;
-  box-shadow:
-    0 12px 32px rgba(15, 23, 42, 0.18),
-    0 2px 6px rgba(15, 23, 42, 0.06);
-  z-index: 20;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  display: block;
   font-family: "Geist", sans-serif;
 }
 .account-menu[hidden] {
   display: none;
+}
+/* The actual sign-out card floats top-right above the overlay. */
+.account-menu > .account-row,
+.account-menu > .account-divider,
+.account-menu > .signout-btn,
+.account-menu > .account-caption {
+  position: relative;
+  z-index: 1;
+}
+.account-menu::before {
+  content: "";
+  position: absolute;
+  top: 56px;
+  right: 14px;
+  width: 224px;
+  height: calc(100% - 70px);
+  max-height: 220px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.28),
+    0 2px 6px rgba(15, 23, 42, 0.10);
+  pointer-events: none;
+}
+.account-menu > .account-row {
+  margin: 56px 14px 0 auto;
+  width: 224px;
+  padding: 10px 10px 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+}
+.account-menu > .account-divider {
+  margin: 4px 18px 4px auto;
+  width: 216px;
+}
+.account-menu > .signout-btn {
+  margin: 0 18px 0 auto;
+  width: 216px;
+}
+.account-menu > .account-caption {
+  margin: 0 18px 12px auto;
+  width: 216px;
 }
 .account-row {
   padding: 10px 10px 8px;
@@ -807,8 +893,12 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-/* State pill (shared) */
+/* ───────────────────── STATUS DISPLAY ─────────────────────
+   State pill — visually reflects current calendar state.
+   Themed via body[data-state="…"] and BEM-style .status--…
+   modifier classes. Transitions are smooth between states. */
 .state-pill {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -819,12 +909,93 @@ button {
   font-size: 11.5px;
   font-weight: 500;
   letter-spacing: 0.005em;
+  transition:
+    background-color 320ms ease,
+    color 320ms ease,
+    box-shadow 320ms ease;
 }
 .pill-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--pill-dot);
+  transition:
+    background-color 320ms ease,
+    box-shadow 320ms ease,
+    transform 320ms ease;
+}
+
+/* ── State: Idle (Grey) ───────────────────────────────────
+   Desaturated solid grey surface, no glow, calm dot. */
+body[data-state="idle"] .state-pill,
+.state-pill.status--idle,
+.status--idle .state-pill {
+  background: #eef0f4;
+  color: #475569;
+  box-shadow: none;
+  animation: none;
+}
+body[data-state="idle"] .pill-dot,
+.state-pill.status--idle .pill-dot,
+.status--idle .pill-dot {
+  background: #9ca3af;
+  box-shadow: none;
+  animation: none;
+}
+
+/* ── State: Ready (Blue) ──────────────────────────────────
+   Active blue surface with a breathing/pulsing glow.
+   The dot pulses in sync with the surface. */
+body[data-state="ready"] .state-pill,
+.state-pill.status--ready,
+.status--ready .state-pill {
+  background: #e5f0fe;
+  color: #1d4ed8;
+  animation: statusPulseReady 2.4s ease-in-out infinite;
+}
+body[data-state="ready"] .pill-dot,
+.state-pill.status--ready .pill-dot,
+.status--ready .pill-dot {
+  background: #2f8bf6;
+  animation: statusDotPulseReady 2.4s ease-in-out infinite;
+}
+
+/* ── State: Active (Green) ────────────────────────────────
+   Vibrant green surface with a steady green tint/glow
+   indicating an in-progress event. */
+body[data-state="active"] .state-pill,
+.state-pill.status--active,
+.status--active .state-pill {
+  background: #e2f7e8;
+  color: #15803d;
+  animation: statusGlowActive 3.2s ease-in-out infinite;
+}
+body[data-state="active"] .pill-dot,
+.state-pill.status--active .pill-dot,
+.status--active .pill-dot {
+  background: #2dbe5a;
+  box-shadow: 0 0 8px rgba(45, 190, 90, 0.65);
+}
+
+/* Footer dot mirrors state colors with a subtle glow */
+body[data-state="ready"] #footer-dot {
+  box-shadow: 0 0 6px rgba(47, 139, 246, 0.6);
+}
+body[data-state="active"] #footer-dot {
+  box-shadow: 0 0 6px rgba(45, 190, 90, 0.6);
+}
+body[data-state="idle"] #footer-dot {
+  box-shadow: none;
+}
+
+/* Respect reduced-motion preferences — disable pulsing/glow
+   animation but keep the static color theming intact. */
+@media (prefers-reduced-motion: reduce) {
+  .state-pill,
+  .pill-dot {
+    animation: none !important;
+    transition: background-color 200ms ease, color 200ms ease;
+  }
 }
 
 /* Totem (sized container; SVG is injected) */

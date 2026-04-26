@@ -1,13 +1,5 @@
 console.log("Extension Active");
 
-<<<<<<< HEAD
-// ─── Gemini + history-based learning ──────────────────────────────────────
-const GEMINI_MODEL_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
-const GEMINI_TIMEOUT_MS = 10_000;
-const LEARNING_CAPTURE_LIMIT = 60;
-const LEARNING_BUCKET_LIMIT = 50;
-=======
 // ════════════════════════════════════════════════════════════════════════
 //  CONSTANTS  — every value the rest of the file depends on, in one place.
 // ════════════════════════════════════════════════════════════════════════
@@ -48,6 +40,10 @@ const LAUNCH_MAX_TABS        = 8;
 const CATEGORY_CACHE_TTL_MS  = 7 * 24 * 60 * 60 * 1000;
 const PROCESSED_RETRY_MAX    = 3;
 const HISTORY_VISITS_PARALLEL = 8;
+const PREDICTED_TOP_DOMAINS  = 3; // Tier-3 default top-N (e.g., top 3 banking sites)
+
+// Permission descriptors — runtime checks of optional/declared permissions.
+const HISTORY_PERMISSION     = { permissions: ["history"] };
 
 const ZOOM_URL_RE = /https:\/\/[\w.-]*zoom\.us\/[^\s<>"')]+/i;
 const URL_RE      = /https?:\/\/[^\s<>"')]+/gi;
@@ -59,7 +55,6 @@ const STOP_WORDS = new Set([
   "stand-up", "1on1", "1-on-1", "1:1", "weekly", "daily", "monthly", "review",
   "check-in", "checkin", "catchup", "catch-up", "discussion", "discuss",
 ]);
->>>>>>> fc908d0 (backend updates)
 
 const HISTORY_NOISE_PATTERNS = [
   /^chrome:\/\//i,
@@ -125,6 +120,56 @@ async function updateStorageKey(key, mutator) {
   });
 }
 
+// Lock-safe single-key reader. Ensures predictive lookups can't race a
+// concurrent learnFromHistory write into the same bucket.
+async function readStorageKey(key) {
+  return withStorageLock(key, async () => {
+    const got = await chrome.storage.local.get(key);
+    return got[key];
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  PERMISSIONS  — runtime checks for declared/optional permissions.
+//  History prediction (Tier 3) is gated on the user actually having
+//  granted the "history" permission at runtime; presence in the manifest
+//  is necessary but not sufficient under MV3.
+// ════════════════════════════════════════════════════════════════════════
+
+async function hasHistoryPermission() {
+  try {
+    if (!chrome?.permissions?.contains) return false;
+    return await new Promise((resolve) => {
+      chrome.permissions.contains(HISTORY_PERMISSION, (granted) => {
+        if (chrome.runtime.lastError) {
+          console.warn("[permissions] contains(history) error:",
+            chrome.runtime.lastError.message);
+          resolve(false);
+          return;
+        }
+        resolve(Boolean(granted));
+      });
+    });
+  } catch (err) {
+    console.warn("[permissions] hasHistoryPermission failed:", err?.message);
+    return false;
+  }
+}
+
+// One-shot startup log so the user sees the gate in the SW console.
+async function logHistoryPermissionGate() {
+  const granted = await hasHistoryPermission();
+  if (granted) {
+    console.log("[permissions] history: granted — predictive Tier 3 enabled");
+  } else {
+    console.warn(
+      "[permissions] history: NOT granted — predictive Tier 3 disabled. " +
+      "Events without explicit URLs will use Tier 1/2 only."
+    );
+  }
+  return granted;
+}
+
 // ════════════════════════════════════════════════════════════════════════
 //  PURE HELPERS  — no chrome.* state, no I/O.
 // ════════════════════════════════════════════════════════════════════════
@@ -132,24 +177,6 @@ async function updateStorageKey(key, mutator) {
 function isNoiseUrl(url) {
   if (!url) return true;
   return HISTORY_NOISE_PATTERNS.some((re) => re.test(url));
-}
-
-const LEARNING_NOISE_PATTERNS = [
-  /(^|\.)google\.com\/search/i,
-  /^https?:\/\/mail\.google\.com/i,
-  /(^|\.)doubleclick\.net/i,
-  /(^|\.)googlesyndication\.com/i,
-  /(^|\.)googleadservices\.com/i,
-  /(^|\.)adservice\.google\./i,
-  /(^|\.)adsystem\.com/i,
-  /(^|\.)taboola\.com/i,
-  /(^|\.)outbrain\.com/i,
-];
-
-function isLearningNoiseUrl(url) {
-  if (!url) return true;
-  if (isNoiseUrl(url)) return true;
-  return LEARNING_NOISE_PATTERNS.some((re) => re.test(url));
 }
 
 function domainFromUrl(url) {
@@ -161,92 +188,12 @@ function domainFromUrl(url) {
   }
 }
 
-<<<<<<< HEAD
-function sanitizeLearningUrl(url) {
-  if (!url) return null;
-  try {
-    const parsed = new URL(normalizeUrl(url));
-    if (!/^https?:$/i.test(parsed.protocol)) return null;
-    parsed.search = "";
-    parsed.hash = "";
-    const sanitized = parsed.toString();
-    if (isLearningNoiseUrl(sanitized)) return null;
-    return sanitized;
-  } catch {
-    return null;
-  }
-}
-
-function trimKeywordBucket(bucket, maxUrls = LEARNING_BUCKET_LIMIT) {
-  return Object.fromEntries(
-    Object.entries(bucket || {})
-      .filter(([, count]) => Number.isFinite(count) && count > 0)
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, maxUrls)
-  );
-}
-
-async function getGeminiApiKey() {
-  try {
-    const result = await chrome.storage.local.get("geminiApiKey");
-    const key = typeof result.geminiApiKey === "string" ? result.geminiApiKey.trim() : "";
-    return key || null;
-  } catch (err) {
-    console.warn("[categorizeEvent] failed to read geminiApiKey:", err.message);
-    return null;
-  }
-}
-
-async function fetchWithTimeout(url, options, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function categorizeEvent(eventTitle) {
-  if (!eventTitle) {
-    console.log("[categorizeEvent] empty title, skipping");
-    return null;
-  }
-  const apiKey = await getGeminiApiKey();
-  if (!apiKey) {
-    console.log("[categorizeEvent] no geminiApiKey in storage, falling back to keyword matching");
-    return null;
-  }
-  const prompt =
-    `Categorize this calendar event title into a single, lowercase, ` +
-    `one-word category (e.g., finance, design, engineering, sync, personal): ` +
-    `${eventTitle}`;
-
-  try {
-    const res = await fetchWithTimeout(
-      `${GEMINI_MODEL_URL}?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 8 },
-        }),
-      },
-      GEMINI_TIMEOUT_MS
-    );
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.warn(`[categorizeEvent] HTTP ${res.status}:`, errText);
-      return null;
-=======
 function normalizeUrl(url) {
   try {
     const parsed = new URL(url);
     if (parsed.hostname === "www.google.com" && parsed.pathname === "/url") {
       const target = parsed.searchParams.get("q");
       if (target) return normalizeUrl(target);
->>>>>>> fc908d0 (backend updates)
     }
     parsed.hash = "";
     if ((parsed.protocol === "http:" && parsed.port === "80") ||
@@ -326,39 +273,6 @@ function findCurrentlyActiveEvent(events) {
   return null;
 }
 
-<<<<<<< HEAD
-  const items = await new Promise((resolve) => {
-    chrome.history.search(
-      {
-        text: "",
-        startTime: meetingStartTime,
-        endTime: meetingEndTime,
-        maxResults: 1000,
-      },
-      (results) => resolve(results || [])
-    );
-  });
-
-  console.log(
-    `[learnFromHistory] category="${category}" window=[${new Date(
-      meetingStartTime
-    ).toISOString()}..${new Date(meetingEndTime).toISOString()}] items=${items.length}`
-  );
-
-  const counts = new Map();
-  for (const item of items) {
-    const sanitizedUrl = sanitizeLearningUrl(item.url);
-    if (!sanitizedUrl) continue;
-    if (
-      typeof item.lastVisitTime === "number" &&
-      (item.lastVisitTime < meetingStartTime || item.lastVisitTime > meetingEndTime)
-    ) {
-      continue;
-    }
-    const domain = domainFromUrl(sanitizedUrl);
-    if (!domain) continue;
-    counts.set(domain, (counts.get(domain) || 0) + (item.visitCount || 1));
-=======
 function findNextUpcomingEvent(events) {
   const now = Date.now();
   let best = null;
@@ -369,7 +283,6 @@ function findNextUpcomingEvent(events) {
       best = ev;
       bestStart = s;
     }
->>>>>>> fc908d0 (backend updates)
   }
   return best;
 }
@@ -489,7 +402,7 @@ async function categorizeEvent(eventTitle) {
 
   const prompt =
     `Categorize this calendar event title into a single, lowercase, ` +
-    `one-word category (e.g., finance, design, engineering, sync, personal): ` +
+    `one-word category (e.g., finance, design, engineering, sync, personal, bills): ` +
     `${eventTitle}`;
 
   try {
@@ -523,6 +436,7 @@ async function categorizeEvent(eventTitle) {
 
 // ════════════════════════════════════════════════════════════════════════
 //  HISTORY — per-visit accurate scoring + locked storage merge
+//  Hard-gated on hasHistoryPermission(): if absent, this is a no-op.
 // ════════════════════════════════════════════════════════════════════════
 
 function getVisitsForUrl(url) {
@@ -557,6 +471,11 @@ async function learnFromHistory(category, meetingStartTime, meetingEndTime) {
   if (!Number.isFinite(meetingStartTime) || !Number.isFinite(meetingEndTime)
       || meetingEndTime <= meetingStartTime) {
     console.warn("[learnFromHistory] invalid window", { meetingStartTime, meetingEndTime });
+    return [];
+  }
+
+  if (!(await hasHistoryPermission())) {
+    console.warn("[learnFromHistory] history permission missing — skipping learn");
     return [];
   }
 
@@ -622,7 +541,7 @@ async function learnFromHistory(category, meetingStartTime, meetingEndTime) {
 
   return [...domainCounts.entries()]
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
+    .slice(0, PREDICTED_TOP_DOMAINS)
     .map(([d]) => d);
 }
 
@@ -633,8 +552,8 @@ async function learnFromHistory(category, meetingStartTime, meetingEndTime) {
 // Cached per event id; cache write is lock-protected.
 async function getOrCacheCategory(event) {
   if (!event?.id || !event?.summary) return null;
-  const got = await chrome.storage.local.get(CATEGORY_CACHE_KEY);
-  const hit = got[CATEGORY_CACHE_KEY]?.[event.id];
+  const cache = await readStorageKey(CATEGORY_CACHE_KEY);
+  const hit = cache?.[event.id];
   if (hit?.category && Number.isFinite(hit.ts)
       && Date.now() - hit.ts < CATEGORY_CACHE_TTL_MS) {
     return hit.category;
@@ -642,41 +561,89 @@ async function getOrCacheCategory(event) {
   const category = await categorizeEvent(event.summary);
   if (category) {
     await updateStorageKey(CATEGORY_CACHE_KEY, (current) => {
-      const cache = current || {};
-      cache[event.id] = { category, ts: Date.now() };
-      return cache;
+      const next = current || {};
+      next[event.id] = { category, ts: Date.now() };
+      return next;
     });
   }
   return category;
 }
 
-async function predictUrlsForCategory(category, limit = LAUNCH_MAX_TABS) {
+// Tier 3 lookup: top history-scored domains for the given Gemini category.
+// Uses a lock-safe read so concurrent learnFromHistory writes can't race.
+async function predictUrlsForCategory(category, limit = PREDICTED_TOP_DOMAINS) {
   if (!category) return [];
-  const got = await chrome.storage.local.get(CATEGORY_DOMAINS_KEY);
-  const bucket = got[CATEGORY_DOMAINS_KEY]?.[category] || {};
+  const all = await readStorageKey(CATEGORY_DOMAINS_KEY);
+  const bucket = all?.[category];
+  if (!bucket) return [];
   return Object.entries(bucket)
+    .filter(([, score]) => Number.isFinite(score) && score > 0)
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
     .map(([domain]) => `https://${domain}/`);
 }
 
-// Three-tier resolver:
-//   1) explicit URLs in the event,
-//   2) keyword-ranked URLs from observed-tab learning,
-//   3) Gemini-derived category → top history-scored domains.
+// Three-tier resolver for the "what do I open for this event" question:
+//   Tier 1: explicit URLs in the event (hangoutLink, location, description, attachments).
+//   Tier 2: keyword-ranked URLs from observed-tab learning.
+//   Tier 3: Gemini category → top history-scored domains (requires history perm).
+//
+// Tier 3 is gated on the user having granted the "history" permission at
+// runtime. If history is unavailable, we degrade gracefully to [] rather
+// than throwing — the caller (launchEventNow / tempoNotifyTick) decides
+// what to do when no URLs at all can be resolved.
 async function predictLaunchUrlsForEvent(event, keywordMap) {
+  // Tier 1: explicit URLs — meeting link / hangoutLink wins.
   const explicit = extractUrlsFromEvent(event);
-  if (explicit.length > 0) return explicit.slice(0, LAUNCH_MAX_TABS);
+  if (explicit.length > 0) {
+    return explicit.slice(0, LAUNCH_MAX_TABS);
+  }
 
+  // Tier 2: keyword-ranked URL list from observed-tab learning.
   const learned = rankUrlsForKeywords(extractKeywords(event?.summary), keywordMap);
-  if (learned.length > 0) return learned.slice(0, LAUNCH_MAX_TABS);
+  if (learned.length > 0) {
+    return learned.slice(0, LAUNCH_MAX_TABS);
+  }
 
-  const category = await getOrCacheCategory(event);
-  if (!category) return [];
-  const predicted = await predictUrlsForCategory(category);
+  // Tier 3: Gemini category → top history-scored domains. Permission-gated.
+  if (!(await hasHistoryPermission())) {
+    console.log(
+      `[predict] "${event?.summary}" — Tiers 1/2 empty, Tier 3 unavailable ` +
+      `(history permission not granted)`
+    );
+    return [];
+  }
+
+  let category = null;
+  try {
+    category = await getOrCacheCategory(event);
+  } catch (err) {
+    console.warn("[predict] getOrCacheCategory failed:", err?.message);
+    return [];
+  }
+  if (!category) {
+    console.log(`[predict] "${event?.summary}" — no Gemini category, no Tier 3 fallback`);
+    return [];
+  }
+
+  let predicted = [];
+  try {
+    predicted = await predictUrlsForCategory(category);
+  } catch (err) {
+    console.warn(
+      `[predict] predictUrlsForCategory("${category}") failed:`, err?.message
+    );
+    return [];
+  }
   if (predicted.length > 0) {
     console.log(
-      `[predict] "${event.summary}" → category "${category}" → ${predicted.length} url(s)`
+      `[predict] Tier 3 hit: "${event?.summary}" → category "${category}" → ` +
+      `${predicted.length} url(s) [${predicted.join(", ")}]`
+    );
+  } else {
+    console.log(
+      `[predict] Tier 3 miss: "${event?.summary}" → category "${category}" → ` +
+      `no scored history yet for this category`
     );
   }
   return predicted;
@@ -685,7 +652,8 @@ async function predictLaunchUrlsForEvent(event, keywordMap) {
 // Post-event hook. Idempotent + retry-aware:
 //   - never stamps `done` until the learn pipeline succeeds,
 //   - tracks an `attempts` counter so transient Gemini/history failures retry,
-//   - silently drops permanently malformed events (start/end missing).
+//   - silently drops permanently malformed events (start/end missing),
+//   - skips entirely if history permission is not granted (nothing to learn).
 async function processFinishedEvent(eventSummary) {
   if (!eventSummary?.id) return;
   if (!Number.isFinite(eventSummary.startMs)
@@ -695,9 +663,14 @@ async function processFinishedEvent(eventSummary) {
     return;
   }
 
-  // Read current dedup state to decide whether to attempt.
-  const got = await chrome.storage.local.get(PROCESSED_EVENTS_KEY);
-  const current = got[PROCESSED_EVENTS_KEY]?.[eventSummary.id];
+  if (!(await hasHistoryPermission())) {
+    console.log("[post-hook] history permission missing — skipping learn for",
+      eventSummary.id);
+    return;
+  }
+
+  const processed = await readStorageKey(PROCESSED_EVENTS_KEY);
+  const current = processed?.[eventSummary.id];
   if (current?.done) return;
   if ((current?.attempts || 0) >= PROCESSED_RETRY_MAX) return;
 
@@ -738,8 +711,7 @@ async function processFinishedEvent(eventSummary) {
 // Edge-detect "active event just ended" via persistent lastActive snapshot.
 async function detectAndProcessEndedEvent(events) {
   const now = Date.now();
-  const got = await chrome.storage.local.get(LAST_ACTIVE_KEY);
-  const lastActive = got[LAST_ACTIVE_KEY] || null;
+  const lastActive = await readStorageKey(LAST_ACTIVE_KEY);
   const currentlyActive = findCurrentlyActiveEvent(events);
 
   if (lastActive
@@ -793,120 +765,25 @@ async function recordTabsForActiveEvent() {
   const keywords = extractKeywords(ev.summary);
   if (keywords.length === 0) return;
 
-  const sanitizedUrls = [...new Set(
-    (await getActiveWindowTabUrls())
-      .map(sanitizeLearningUrl)
-      .filter(Boolean)
-  )].slice(0, LEARNING_CAPTURE_LIMIT);
-  if (sanitizedUrls.length === 0) return;
-
-<<<<<<< HEAD
-  const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || {};
-  for (const kw of keywords) {
-    const bucket = stored[kw] || {};
-    for (const url of sanitizedUrls) {
-      bucket[url] = (bucket[url] || 0) + 1;
+  // Tier 2 quality gate: drop noisy URLs (mail/calendar/search/chrome://, etc.)
+  // BEFORE they ever enter the keyword bucket. Same isNoiseUrl filter used by
+  // Tier 3 / learnFromHistory, so both pipelines apply identical noise rules.
+  const rawUrls = await getActiveWindowTabUrls();
+  const urls = [...new Set(
+    rawUrls
+      .map(normalizeUrl)
+      .filter((u) => u && !isNoiseUrl(u))
+  )];
+  const droppedCount = rawUrls.length - urls.length;
+  if (urls.length === 0) {
+    if (droppedCount > 0) {
+      console.log(
+        `[learn] "${ev.summary}" → all ${droppedCount} tab(s) filtered as noise; nothing learned`
+      );
     }
-    stored[kw] = trimKeywordBucket(bucket);
-  }
-  await chrome.storage.local.set({ [STORAGE_KEY]: stored });
-
-  console.log(
-    `Tempo learn: "${ev.summary}" → keywords [${keywords.join(", ")}], recorded ${sanitizedUrls.length} tab(s).`
-  );
-}
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === LEARN_ALARM) recordTabsForActiveEvent();
-});
-
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(LEARN_ALARM, { periodInMinutes: LEARN_PERIOD_MIN });
-});
-chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(LEARN_ALARM, { periodInMinutes: LEARN_PERIOD_MIN });
-});
-
-self.extractKeywords = extractKeywords;
-self.recordTabsForActiveEvent = recordTabsForActiveEvent;
-
-const NOTIFY_ALARM = "tempo-notify";
-const NOTIFY_PERIOD_MIN = 1;
-const SNOOZE_ALARM_PREFIX = "tempo-snooze:";
-const SNOOZE_DELAY_MIN = 5;
-const NOTIF_ID_PREFIX = "tempo-notif:";
-const NOTIFY_LOOKAHEAD_MS = 10 * 60 * 1000;
-const LAUNCH_FREQ_MIN = 2;
-const LAUNCH_MAX_TABS = 8;
-const LAUNCH_DEBOUNCE_MS = 30_000;
-const PENDING_KEY = "pendingLaunches";
-const NOTIFIED_KEY = "notifiedEventIds";
-const LAUNCHED_KEY = "launchedEvent";
-const POPUP_STATUS_KEY = "popupStatus";
-const recentLaunches = new Map();
-
-function shouldSkipDebouncedLaunch(eventId) {
-  if (!eventId) return true;
-  const now = Date.now();
-  for (const [id, ts] of recentLaunches.entries()) {
-    if (now - ts > LAUNCH_DEBOUNCE_MS) recentLaunches.delete(id);
-  }
-  const previous = recentLaunches.get(eventId);
-  if (previous && now - previous < LAUNCH_DEBOUNCE_MS) return true;
-  recentLaunches.set(eventId, now);
-  return false;
-}
-
-function pickEventStartingSoon(events, withinMs) {
-  const now = Date.now();
-  for (const ev of events) {
-    const start = new Date(ev.start?.dateTime || ev.start?.date || 0).getTime();
-    if (start > now && start - now <= withinMs) return ev;
-  }
-  return null;
-}
-
-function pickLaunchableActiveEvent(events) {
-  const now = Date.now();
-  for (const ev of events) {
-    const start = new Date(ev.start?.dateTime || ev.start?.date || 0).getTime();
-    const end = eventEndMs(ev);
-    if (start <= now && now < end) return ev;
-  }
-  return null;
-}
-
-function rankUrlsForKeywords(keywords, keywordMap) {
-  const totals = new Map();
-  for (const kw of keywords) {
-    const bucket = keywordMap[kw];
-    if (!bucket) continue;
-    for (const [url, count] of Object.entries(bucket)) {
-      totals.set(url, (totals.get(url) || 0) + count);
-    }
-  }
-  return [...totals.entries()]
-    .filter(([, n]) => n >= LAUNCH_FREQ_MIN)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, LAUNCH_MAX_TABS)
-    .map(([url]) => url);
-}
-
-function launchUrlsForEvent(event, keywordMap) {
-  const eventUrls = extractUrlsFromEvent(event);
-  if (eventUrls.length > 0) {
-    return eventUrls.slice(0, LAUNCH_MAX_TABS);
+    return;
   }
 
-  const keywords = extractKeywords(event.summary);
-  const learnedUrls = rankUrlsForKeywords(keywords, keywordMap);
-  return learnedUrls.slice(0, LAUNCH_MAX_TABS);
-}
-
-function eventEndMs(event) {
-  return new Date(event.end?.dateTime || event.end?.date || 0).getTime();
-}
-=======
   await updateStorageKey(STORAGE_KEY, (current) => {
     const stored = current || {};
     for (const kw of keywords) {
@@ -918,14 +795,14 @@ function eventEndMs(event) {
   });
 
   console.log(
-    `[learn] "${ev.summary}" → keywords [${keywords.join(", ")}], +${urls.length} tab(s)`
+    `[learn] "${ev.summary}" → keywords [${keywords.join(", ")}], +${urls.length} tab(s)` +
+    (droppedCount > 0 ? ` (filtered ${droppedCount} noise URL(s))` : "")
   );
 }
 
 // ════════════════════════════════════════════════════════════════════════
 //  NOTIFICATION + LAUNCH FLOW
 // ════════════════════════════════════════════════════════════════════════
->>>>>>> fc908d0 (backend updates)
 
 async function promptForEvent(event, urls) {
   const eventId = event.id;
@@ -960,14 +837,6 @@ async function promptForEvent(event, urls) {
 }
 
 async function launchPendingEvent(eventId) {
-<<<<<<< HEAD
-  if (shouldSkipDebouncedLaunch(eventId)) {
-    console.log(`Tempo launch: skipped duplicate launch for ${eventId}.`);
-    return;
-  }
-  const pending = (await chrome.storage.local.get(PENDING_KEY))[PENDING_KEY] || {};
-  const entry = pending[eventId];
-=======
   // Read entry under the same lock that promptForEvent uses, then carve it out.
   const entry = await withStorageLock("__pendingNotified", async () => {
     const got = await chrome.storage.local.get(PENDING_KEY);
@@ -978,7 +847,6 @@ async function launchPendingEvent(eventId) {
     await chrome.storage.local.set({ [PENDING_KEY]: pending });
     return e;
   });
->>>>>>> fc908d0 (backend updates)
   if (!entry) {
     console.warn(`[launch] no pending entry for ${eventId}`);
     return;
@@ -1012,37 +880,37 @@ async function launchPendingEvent(eventId) {
     catch (err) { console.warn("[launch] windows.update failed:", err?.message); }
   }
 
-<<<<<<< HEAD
-async function executeLaunchFromBackground(eventId) {
-  await launchPendingEvent(eventId);
-}
-
-async function findEventById(eventId) {
-  const events = await fetchUpcomingEvents({ interactive: false });
-  return events.find((event) => event.id === eventId) || null;
-=======
   await updateStorageKey(LAUNCHED_KEY, () => ({ eventId, end: entry.end }));
   await setIconColorSafe("green");
   await chrome.notifications.clear(NOTIF_ID_PREFIX + eventId).catch(() => {});
   console.log(`[launch] opened ${openedCount} tab(s) for ${eventId}`);
->>>>>>> fc908d0 (backend updates)
 }
 
+// User-initiated launch from the popup. Resolves URLs through the full
+// three-tier pipeline so events without explicit URLs no longer dead-end:
+// they fall through to keyword-learning (Tier 2) and Gemini+history (Tier 3).
 async function launchEventNow(eventId) {
   const event = await findEventById(eventId);
   if (!event) throw new Error(`Tempo could not find event ${eventId}.`);
 
-  const got = await chrome.storage.local.get(STORAGE_KEY);
-  const stored = got[STORAGE_KEY] || {};
+  const stored = (await readStorageKey(STORAGE_KEY)) || {};
   const urls = await predictLaunchUrlsForEvent(event, stored);
-  if (urls.length === 0) throw new Error("This event has no launchable URLs.");
 
-<<<<<<< HEAD
-  const pending = (await chrome.storage.local.get(PENDING_KEY))[PENDING_KEY] || {};
-  pending[eventId] = { urls, end: eventEndMs(event) };
-  await chrome.storage.local.set({ [PENDING_KEY]: pending });
-  await executeLaunchFromBackground(eventId);
-=======
+  if (urls.length === 0) {
+    // Surface a permission-aware error so the UI/user can act on it.
+    const historyOk = await hasHistoryPermission();
+    if (!historyOk) {
+      throw new Error(
+        "No launchable URLs. Grant the 'history' permission to enable " +
+        "predictive workspace suggestions for events without explicit links."
+      );
+    }
+    throw new Error(
+      "No launchable URLs yet — Tempo needs more history to predict " +
+      "this event's workspace. It will keep learning."
+    );
+  }
+
   await withStorageLock("__pendingNotified", async () => {
     const cur = await chrome.storage.local.get(PENDING_KEY);
     const pending = cur[PENDING_KEY] || {};
@@ -1050,7 +918,6 @@ async function launchEventNow(eventId) {
     await chrome.storage.local.set({ [PENDING_KEY]: pending });
   });
   await launchPendingEvent(eventId);
->>>>>>> fc908d0 (backend updates)
 }
 
 async function snoozeEvent(eventId) {
@@ -1069,15 +936,12 @@ async function snoozeEvent(eventId) {
 // ════════════════════════════════════════════════════════════════════════
 
 async function syncIconToState() {
-  const got = await chrome.storage.local.get(LAUNCHED_KEY);
-  const launched = got[LAUNCHED_KEY];
+  const launched = await readStorageKey(LAUNCHED_KEY);
   if (launched && Number.isFinite(launched.end) && Date.now() <= launched.end) {
     await setIconColorSafe("green");
     return "active";
   }
   if (launched) {
-    await updateStorageKey(LAUNCHED_KEY, () => undefined).catch(() => {});
-    // updateStorageKey writes only when mutator returns non-undefined — emulate remove:
     await chrome.storage.local.remove(LAUNCHED_KEY).catch(() => {});
   }
 
@@ -1130,7 +994,7 @@ async function tempoNotifyTick() {
     );
 
     // Run post-event hook (categorize + history-learn) for any event that
-    // was active and has now ended.
+    // was active and has now ended. Internally permission-gated.
     await detectAndProcessEndedEvent(events).catch((err) =>
       console.warn("[notify] post-hook failed:", err?.message)
     );
@@ -1151,10 +1015,16 @@ async function tempoNotifyTick() {
     });
     if (!reserved) return;
 
-    const got = await chrome.storage.local.get(STORAGE_KEY);
-    const stored = got[STORAGE_KEY] || {};
+    // Three-tier predictive resolution. Tier 3 (Gemini + history) kicks in
+    // automatically when Tiers 1/2 are empty and history permission exists.
+    const stored = (await readStorageKey(STORAGE_KEY)) || {};
     const urls = await predictLaunchUrlsForEvent(ev, stored);
-    if (urls.length === 0) return;
+    if (urls.length === 0) {
+      console.log(
+        `[notify] "${ev.summary}" — no URLs from any tier; skipping prompt`
+      );
+      return;
+    }
 
     await promptForEvent(ev, urls);
   } finally {
@@ -1174,10 +1044,12 @@ async function reprompFromSnooze(eventId) {
   if (!ev) return;
   if (eventEndMs(ev) <= Date.now()) return;
 
-  const got = await chrome.storage.local.get(STORAGE_KEY);
-  const stored = got[STORAGE_KEY] || {};
+  const stored = (await readStorageKey(STORAGE_KEY)) || {};
   const urls = await predictLaunchUrlsForEvent(ev, stored);
-  if (urls.length === 0) return;
+  if (urls.length === 0) {
+    console.log(`[snooze] "${ev.summary}" — no URLs from any tier; skipping reprompt`);
+    return;
+  }
 
   await promptForEvent(ev, urls);
 }
@@ -1186,43 +1058,6 @@ async function reprompFromSnooze(eventId) {
 //  POPUP STATE
 // ════════════════════════════════════════════════════════════════════════
 
-<<<<<<< HEAD
-chrome.notifications.onButtonClicked.addListener((notifId, btnIdx) => {
-  if (!notifId.startsWith(NOTIF_ID_PREFIX)) return;
-  const eventId = notifId.slice(NOTIF_ID_PREFIX.length);
-  if (btnIdx === 0) executeLaunchFromBackground(eventId);
-  else if (btnIdx === 1) snoozeEvent(eventId);
-});
-
-chrome.notifications.onClicked.addListener((notifId) => {
-  if (!notifId.startsWith(NOTIF_ID_PREFIX)) return;
-  const eventId = notifId.slice(NOTIF_ID_PREFIX.length);
-  executeLaunchFromBackground(eventId);
-});
-
-chrome.notifications.onClosed.addListener(async (notifId) => {
-  if (!notifId.startsWith(NOTIF_ID_PREFIX)) return;
-  const eventId = notifId.slice(NOTIF_ID_PREFIX.length);
-  const pending = (await chrome.storage.local.get(PENDING_KEY))[PENDING_KEY] || {};
-  if (pending[eventId]) {
-    delete pending[eventId];
-    await chrome.storage.local.set({ [PENDING_KEY]: pending });
-  }
-});
-
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(NOTIFY_ALARM, { periodInMinutes: NOTIFY_PERIOD_MIN });
-  syncIconToState().catch(() => {});
-});
-chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(NOTIFY_ALARM, { periodInMinutes: NOTIFY_PERIOD_MIN });
-  syncIconToState().catch(() => {});
-});
-
-self.tempoNotifyTick = tempoNotifyTick;
-self.launchPendingEvent = launchPendingEvent;
-self.snoozeEvent = snoozeEvent;
-=======
 async function writePopupStatus(event = null) {
   await updateStorageKey(POPUP_STATUS_KEY, () => ({
     title: event?.summary || null,
@@ -1230,7 +1065,6 @@ async function writePopupStatus(event = null) {
     updatedAt: Date.now(),
   }));
 }
->>>>>>> fc908d0 (backend updates)
 
 function firstKeywordFromEvent(event) {
   return extractKeywords(event?.summary || "")[0] || null;
@@ -1248,6 +1082,7 @@ async function getPopupDashboardState() {
       observedUrls: [],
       currentEvent: null,
       upcomingEvents: [],
+      historyPermission: await hasHistoryPermission(),
     };
   }
 
@@ -1261,8 +1096,7 @@ async function getPopupDashboardState() {
 
     await writePopupStatus(currentEvent);
 
-    const got = await chrome.storage.local.get(STORAGE_KEY);
-    const stored = got[STORAGE_KEY] || {};
+    const stored = (await readStorageKey(STORAGE_KEY)) || {};
 
     // Only burn a Gemini call when the event is actually imminent.
     let currentLaunchUrls = [];
@@ -1303,6 +1137,7 @@ async function getPopupDashboardState() {
       currentLaunchUrls,
       upcomingEvents,
       tokenPresent: Boolean(token),
+      historyPermission: await hasHistoryPermission(),
     };
   } catch (err) {
     console.warn("[popup] failed to build dashboard state:", err.message);
@@ -1316,90 +1151,15 @@ async function getPopupDashboardState() {
       currentLaunchUrls: [],
       upcomingEvents: [],
       tokenPresent: Boolean(token),
+      historyPermission: await hasHistoryPermission(),
       error: err.message,
     };
   }
 }
 
-<<<<<<< HEAD
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "tempo:get-popup-state") {
-    getPopupDashboardState()
-      .then(async (payload) => {
-        await syncIconToState().catch(() => {});
-        sendResponse({ ok: true, ...payload });
-      })
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
-  if (message?.type === "tempo:authenticate") {
-    getAuthToken({ interactive: true })
-      .then(() => getPopupDashboardState())
-      .then(async (payload) => {
-        await syncIconToState().catch(() => {});
-        sendResponse({ ok: true, ...payload });
-      })
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
-  if (message?.type === "tempo:mark-launched") {
-    executeLaunchFromBackground(message.eventId)
-      .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
-  if (message?.type === "tempo:get-current-user") {
-    chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }, (info) => {
-      sendResponse({ ok: true, email: info?.email || null });
-    });
-    return true;
-  }
-
-  if (message?.type === "tempo:sign-out") {
-    signOut()
-      .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
-  if (message?.type === "tempo:refresh-popup-status") {
-    fetchUpcomingEvents({ interactive: false })
-      .then((events) => {
-        const currentEvent = pickCurrentOrUpcoming(events);
-        return writePopupStatus(currentEvent).then(() => ({
-          title: currentEvent?.summary || null,
-          keywords: extractKeywords(currentEvent?.summary || ""),
-        }));
-      })
-      .then((payload) => sendResponse({ ok: true, ...payload }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
-  if (message?.type === "tempo:launch-event") {
-    launchEventNow(message.eventId)
-      .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
-  if (message?.type === "tempo:snooze-event") {
-    snoozeEvent(message.eventId)
-      .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
-  return false;
-});
-=======
 // ════════════════════════════════════════════════════════════════════════
 //  SIGN-OUT
 // ════════════════════════════════════════════════════════════════════════
->>>>>>> fc908d0 (backend updates)
 
 async function signOut() {
   let token = null;
@@ -1448,10 +1208,17 @@ function ensureRecurringAlarms() {
   chrome.alarms.create(NOTIFY_ALARM, { periodInMinutes: NOTIFY_PERIOD_MIN });
 }
 
+// Initializes the 'Transition to Flow' workflow:
+//   1) Resets the icon (on fresh install only).
+//   2) Logs the runtime history-permission state so the operator can see
+//      whether predictive Tier 3 is live.
+//   3) Ensures recurring alarms exist.
+//   4) Syncs the icon to current calendar state.
 async function masterStartup({ fresh }) {
   if (fresh) {
     await setIconColorSafe("grey");
   }
+  await logHistoryPermissionGate().catch(() => {});
   ensureRecurringAlarms();
   await syncIconToState().catch((err) =>
     console.warn("[startup] syncIconToState failed:", err?.message)
@@ -1469,6 +1236,23 @@ chrome.runtime.onStartup.addListener(() => {
     console.warn("[onStartup] failed:", err?.message)
   );
 });
+
+// Keep the in-process permission gate log in sync if the user toggles
+// the history permission at runtime.
+if (chrome?.permissions?.onAdded) {
+  chrome.permissions.onAdded.addListener((perms) => {
+    if (perms?.permissions?.includes("history")) {
+      console.log("[permissions] history granted at runtime — Tier 3 now active");
+    }
+  });
+}
+if (chrome?.permissions?.onRemoved) {
+  chrome.permissions.onRemoved.addListener((perms) => {
+    if (perms?.permissions?.includes("history")) {
+      console.warn("[permissions] history revoked at runtime — Tier 3 disabled");
+    }
+  });
+}
 
 // Single dispatcher for every alarm name.
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -1604,6 +1388,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (type === "tempo:has-history-permission") {
+    hasHistoryPermission()
+      .then((granted) => sendResponse({ ok: true, granted }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   return false;
 });
 
@@ -1633,3 +1424,5 @@ self.getPopupDashboardState     = getPopupDashboardState;
 self.signOut                    = signOut;
 self.withStorageLock            = withStorageLock;
 self.updateStorageKey           = updateStorageKey;
+self.readStorageKey             = readStorageKey;
+self.hasHistoryPermission       = hasHistoryPermission;
