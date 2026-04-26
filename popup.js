@@ -84,11 +84,16 @@ function renderTotem(el, state) {
 // ── State helpers ───────────────────────────────────────────────────────
 function setState(state) {
   document.body.dataset.state = state;
-  renderTotem(loginTotemEl, "ready");
+  renderTotem(loginTotemEl, state);
   renderTotem(heroTotemEl, state);
-  // pills always read "Ready" per design (color shifts via state)
-  for (const pill of [headerPill, heroPill]) {
-    pill.querySelector("span:last-child").textContent = "Ready";
+  const chipText = state === "idle" ? "Idle" : state === "active" ? "Active" : "Ready";
+  const chipClass =
+    state === "idle" ? "status--idle" : state === "active" ? "status--active" : "status--ready";
+  for (const pill of document.querySelectorAll(".ready-pill, .status-chip, .badge, .state-pill")) {
+    pill.classList.remove("status--idle", "status--ready", "status--active");
+    pill.classList.add(chipClass);
+    const label = pill.querySelector("span:last-child");
+    if (label) label.textContent = chipText;
   }
   footerText.textContent = `${stateLabel(state)} · syncing calendar`;
 }
@@ -172,12 +177,15 @@ function sendMessage(message) {
 
 // ── Dashboard rendering ─────────────────────────────────────────────────
 function deriveState(payload) {
+  if (payload?.state === "idle" || payload?.state === "ready" || payload?.state === "active") {
+    return payload.state;
+  }
   if (!payload?.authenticated) return "idle";
   const ev = payload.currentEvent;
   if (!ev) return "idle";
   const now = Date.now();
   if (now >= ev.startMs && now < ev.endMs) return "active";
-  if (ev.startMs > now && ev.startMs - now <= 60 * 60 * 1000) return "ready";
+  if (ev.startMs > now && ev.startMs - now <= 10 * 60 * 1000) return "ready";
   return "idle";
 }
 
@@ -350,6 +358,7 @@ launchBtn.addEventListener("click", async () => {
     sendMessage({
       type: "tempo:mark-launched",
       eventId: currentEvent.id,
+      startMs: currentEvent.startMs,
       endMs: currentEvent.endMs,
     }).catch(() => {});
   }
@@ -432,8 +441,6 @@ signOutBtn.addEventListener("click", async () => {
 // ── Initial load ────────────────────────────────────────────────────────
 async function init() {
   setSignInLoading(false);
-  renderTotem(loginTotemEl, "ready");
-  renderTotem(heroTotemEl, "ready");
   footerClock.textContent = fmtClock();
 
   // Force a toolbar-icon resync the moment the popup opens so a stale
@@ -444,12 +451,14 @@ async function init() {
   try {
     const response = await sendMessage({ type: "tempo:get-popup-state" });
     if (!response?.ok || !response.authenticated) {
+      setState("idle");
       showScreen("login");
       return;
     }
     showScreen("dashboard");
     renderDashboard(response);
   } catch {
+    setState("idle");
     showScreen("login");
   }
 }

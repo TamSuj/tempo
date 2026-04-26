@@ -12,7 +12,7 @@
     />
     <link rel="stylesheet" href="popup.css" />
   </head>
-  <body data-state="ready" data-screen="login">
+  <body data-state="idle" data-screen="login">
     <main class="root">
       <!-- ────────── LOGIN ────────── -->
       <section class="screen screen-login" id="screen-login">
@@ -60,7 +60,7 @@
             <span class="dash-greeting" id="greeting">Good morning</span>
           </div>
           <div class="dash-actions" data-tempo-account>
-            <span class="state-pill" id="header-pill">
+            <span class="state-pill ready-pill status-chip badge" id="header-pill">
               <span class="pill-dot" aria-hidden="true"></span>
               <span>Ready</span>
             </span>
@@ -117,7 +117,7 @@
             <article class="hero-card">
               <div class="hero-totem-row">
                 <div class="totem totem-sm" id="hero-totem" aria-hidden="true"></div>
-                <span class="state-pill" id="hero-pill">
+                <span class="state-pill ready-pill status-chip badge" id="hero-pill">
                   <span class="pill-dot" aria-hidden="true"></span>
                   <span>Ready</span>
                 </span>

@@ -20,7 +20,7 @@ const PROCESSED_EVENTS_KEY   = "processedEvents";   // { [eventId]: { done, atte
 const LAST_ACTIVE_KEY        = "lastActiveEvent";   // { id, summary, startMs, endMs }
 const PENDING_KEY            = "pendingLaunches";   // { [eventId]: { urls, end } }
 const NOTIFIED_KEY           = "notifiedEventIds";  // { [eventId]: ts }
-const LAUNCHED_KEY           = "launchedEvent";     // { eventId, end }
+const LAUNCHED_KEY           = "launchedEvent";     // { eventId, start, end }
 const POPUP_STATUS_KEY       = "popupStatus";       // { title, keywords, updatedAt }
 
 // Alarm + notification names
@@ -806,6 +806,7 @@ async function recordTabsForActiveEvent() {
 
 async function promptForEvent(event, urls) {
   const eventId = event.id;
+  const start = eventStartMs(event);
   const end = eventEndMs(event);
 
   // Single locked transaction over both keys.
@@ -813,7 +814,7 @@ async function promptForEvent(event, urls) {
     const got = await chrome.storage.local.get([PENDING_KEY, NOTIFIED_KEY]);
     const pending = got[PENDING_KEY] || {};
     const notified = got[NOTIFIED_KEY] || {};
-    pending[eventId] = { urls, end };
+    pending[eventId] = { urls, start, end };
     notified[eventId] = Date.now();
     await chrome.storage.local.set({ [PENDING_KEY]: pending, [NOTIFIED_KEY]: notified });
   });
@@ -880,8 +881,10 @@ async function launchPendingEvent(eventId) {
     catch (err) { console.warn("[launch] windows.update failed:", err?.message); }
   }
 
-  await updateStorageKey(LAUNCHED_KEY, () => ({ eventId, end: entry.end }));
-  await setIconColorSafe("green");
+  await updateStorageKey(LAUNCHED_KEY, () => ({ eventId, start: entry.start, end: entry.end }));
+  await syncIconToState().catch((err) =>
+    console.warn("[launch] syncIconToState failed:", err?.message)
+  );
   await chrome.notifications.clear(NOTIF_ID_PREFIX + eventId).catch(() => {});
   console.log(`[launch] opened ${openedCount} tab(s) for ${eventId}`);
 }
@@ -914,7 +917,7 @@ async function launchEventNow(eventId) {
   await withStorageLock("__pendingNotified", async () => {
     const cur = await chrome.storage.local.get(PENDING_KEY);
     const pending = cur[PENDING_KEY] || {};
-    pending[eventId] = { urls, end: eventEndMs(event) };
+    pending[eventId] = { urls, start: eventStartMs(event), end: eventEndMs(event) };
     await chrome.storage.local.set({ [PENDING_KEY]: pending });
   });
   await launchPendingEvent(eventId);
@@ -958,17 +961,44 @@ async function syncIconToState() {
       128: "icons/icon-green-128.png",
     },
   };
-  const applyIcon = (state) =>
-    chrome.action.setIcon({ path: ICON_MAP[state] }).catch((err) =>
+  const applyIcon = async (state) => {
+    await chrome.action.setIcon({ path: ICON_MAP[state] }).catch((err) =>
       console.warn(`[icon] setIcon(${state}) failed:`, err?.message)
     );
+    await chrome.action.setBadgeBackgroundColor({
+      color: state === "idle" ? "#9CA3AF" : state === "active" ? "#2DBE5A" : "#2F8BF6",
+    }).catch((err) =>
+      console.warn("[icon] failed to set badge background color:", err?.message)
+    );
+    if (state === "idle") {
+      await chrome.action.setIcon({ path: ICON_MAP.idle }).catch((err) =>
+        console.warn("[icon] explicit idle reset failed:", err?.message)
+      );
+      await chrome.action.setBadgeText({ text: "" }).catch((err) =>
+        console.warn("[icon] failed to clear badge text:", err?.message)
+      );
+    } else if (state === "ready") {
+      await chrome.action.setBadgeText({ text: "READY" }).catch((err) =>
+        console.warn("[icon] failed to set READY badge text:", err?.message)
+      );
+    } else {
+      await chrome.action.setBadgeText({ text: "LIVE" }).catch((err) =>
+        console.warn("[icon] failed to set LIVE badge text:", err?.message)
+      );
+    }
+  };
 
   // Stale-LAUNCHED_KEY purge: green icon is gated on a still-running event.
   // If the stored end has passed (or end is missing/malformed), drop the key
   // so the icon can fall through to ready/idle below instead of sticking green.
   const launched = await readStorageKey(LAUNCHED_KEY);
+  const now = Date.now();
   const launchedStillActive =
-    launched && Number.isFinite(launched.end) && Date.now() <= launched.end;
+    launched
+    && Number.isFinite(launched.start)
+    && Number.isFinite(launched.end)
+    && launched.start <= now
+    && now < launched.end;
   if (launchedStillActive) {
     await applyIcon("active");
     return "active";
@@ -989,7 +1019,6 @@ async function syncIconToState() {
     return "idle";
   }
 
-  const now = Date.now();
   const liveOrSoon = events.find((e) => {
     const s = eventStartMs(e);
     const en = eventEndMs(e);
@@ -1039,7 +1068,17 @@ async function tempoNotifyTick() {
     // otherwise grab whatever is live right now.
     const upcoming = findEventStartingWithin(events, NOTIFY_LOOKAHEAD_MS);
     const ev = upcoming || findCurrentlyActiveEvent(events);
-    if (!ev) return;
+    if (!ev) {
+      await chrome.storage.local.set({
+        [POPUP_STATUS_KEY]: {
+          title: null,
+          keywords: [],
+          state: "idle",
+          updatedAt: Date.now(),
+        },
+      });
+      return;
+    }
 
     // Atomic dedup check + reservation: if not yet notified, we'll prompt.
     const reserved = await withStorageLock("__pendingNotified", async () => {
@@ -1094,10 +1133,12 @@ async function reprompFromSnooze(eventId) {
 //  POPUP STATE
 // ════════════════════════════════════════════════════════════════════════
 
-async function writePopupStatus(event = null) {
+async function writePopupStatus(event = null, state = null) {
+  const nextState = state || (event ? "ready" : "idle");
   await updateStorageKey(POPUP_STATUS_KEY, () => ({
     title: event?.summary || null,
     keywords: extractKeywords(event?.summary || ""),
+    state: nextState,
     updatedAt: Date.now(),
   }));
 }
@@ -1127,10 +1168,14 @@ async function getPopupDashboardState() {
 
     const liveEvent = findCurrentlyActiveEvent(events);
     const nextEvent = findNextUpcomingEvent(events);
-    const currentEvent = liveEvent || nextEvent;
+    const isNextWithinReadyWindow =
+      Number.isFinite(eventStartMs(nextEvent))
+      && eventStartMs(nextEvent) - Date.now() <= NOTIFY_LOOKAHEAD_MS;
+    const currentEvent = liveEvent || (isNextWithinReadyWindow ? nextEvent : null);
     const currentKeyword = firstKeywordFromEvent(currentEvent);
+    const popupState = liveEvent ? "active" : (currentEvent ? "ready" : "idle");
 
-    await writePopupStatus(currentEvent);
+    await writePopupStatus(currentEvent, popupState);
 
     const stored = (await readStorageKey(STORAGE_KEY)) || {};
 
@@ -1165,7 +1210,7 @@ async function getPopupDashboardState() {
 
     return {
       authenticated: true,
-      state: "active",
+      state: popupState,
       currentKeyword,
       observedUrls,
       eventTitle: currentEvent?.summary || null,
@@ -1179,7 +1224,7 @@ async function getPopupDashboardState() {
     console.warn("[popup] failed to build dashboard state:", err.message);
     return {
       authenticated: true,
-      state: "active",
+      state: "idle",
       currentKeyword: null,
       observedUrls: [],
       eventTitle: null,
@@ -1290,6 +1335,17 @@ if (chrome?.permissions?.onRemoved) {
   });
 }
 
+// Keep toolbar icon in sync on state-bearing storage writes.
+if (chrome?.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") return;
+    if (!changes[LAUNCHED_KEY] && !changes[PENDING_KEY] && !changes[NOTIFIED_KEY]) return;
+    syncIconToState().catch((err) =>
+      console.warn("[storage] syncIconToState failed:", err?.message)
+    );
+  });
+}
+
 // Single dispatcher for every alarm name.
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm?.name) return;
@@ -1374,9 +1430,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (type === "tempo:mark-launched") {
-    const { eventId, endMs } = message;
-    updateStorageKey(LAUNCHED_KEY, () => ({ eventId, end: endMs }))
-      .then(() => setIconColorSafe("green"))
+    const { eventId, startMs, endMs } = message;
+    updateStorageKey(LAUNCHED_KEY, () => ({ eventId, start: startMs, end: endMs }))
+      .then(() => syncIconToState())
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -1399,10 +1455,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (type === "tempo:refresh-popup-status") {
     fetchUpcomingEvents({ interactive: false })
       .then((events) => {
-        const currentEvent = findCurrentlyActiveEvent(events) || findNextUpcomingEvent(events);
-        return writePopupStatus(currentEvent).then(() => ({
+        const activeEvent = findCurrentlyActiveEvent(events);
+        const nextEvent = findNextUpcomingEvent(events);
+        const isNextWithinReadyWindow =
+          Number.isFinite(eventStartMs(nextEvent))
+          && eventStartMs(nextEvent) - Date.now() <= NOTIFY_LOOKAHEAD_MS;
+        const currentEvent = activeEvent || (isNextWithinReadyWindow ? nextEvent : null);
+        const state = activeEvent ? "active" : (currentEvent ? "ready" : "idle");
+        return writePopupStatus(currentEvent, state).then(() => ({
           title: currentEvent?.summary || null,
           keywords: extractKeywords(currentEvent?.summary || ""),
+          state,
         }));
       })
       .then((payload) => sendResponse({ ok: true, ...payload }))
