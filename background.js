@@ -936,9 +936,36 @@ async function snoozeEvent(eventId) {
 // ════════════════════════════════════════════════════════════════════════
 
 async function syncIconToState() {
+  // Map state → toolbar icon. Includes all four sizes Chrome may request
+  // for the pinned action button (16/32/48/128).
+  const ICON_MAP = {
+    idle: {
+      16:  "icons/icon-grey-16.png",
+      32:  "icons/icon-grey-32.png",
+      48:  "icons/icon-grey-48.png",
+      128: "icons/icon-grey-128.png",
+    },
+    ready: {
+      16:  "icons/icon-blue-16.png",
+      32:  "icons/icon-blue-32.png",
+      48:  "icons/icon-blue-48.png",
+      128: "icons/icon-blue-128.png",
+    },
+    active: {
+      16:  "icons/icon-green-16.png",
+      32:  "icons/icon-green-32.png",
+      48:  "icons/icon-green-48.png",
+      128: "icons/icon-green-128.png",
+    },
+  };
+  const applyIcon = (state) =>
+    chrome.action.setIcon({ path: ICON_MAP[state] }).catch((err) =>
+      console.warn(`[icon] setIcon(${state}) failed:`, err?.message)
+    );
+
   const launched = await readStorageKey(LAUNCHED_KEY);
   if (launched && Number.isFinite(launched.end) && Date.now() <= launched.end) {
-    await setIconColorSafe("green");
+    await applyIcon("active");
     return "active";
   }
   if (launched) {
@@ -949,7 +976,7 @@ async function syncIconToState() {
   try {
     events = await fetchUpcomingEvents({ interactive: false });
   } catch {
-    await setIconColorSafe("grey");
+    await applyIcon("idle");
     return "idle";
   }
 
@@ -962,10 +989,10 @@ async function syncIconToState() {
     return false;
   });
   if (liveOrSoon) {
-    await setIconColorSafe("blue");
+    await applyIcon("ready");
     return "ready";
   }
-  await setIconColorSafe("grey");
+  await applyIcon("idle");
   return "idle";
 }
 

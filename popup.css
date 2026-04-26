@@ -447,10 +447,8 @@ button {
   filter: brightness(1.04);
 }
 
-/* Account / Sign-out layer — must sit above the entire dashboard.
-   The popover is rendered inside a full-popup overlay so the dimmed
-   backdrop captures outside-clicks and the panel can never be buried
-   under hero cards, totems, or aurora layers. */
+/* Account / Sign-out layer — full-popup overlay forced to the top layer
+   so the panel can never be buried by hero cards, totems, aurora, etc. */
 .account-menu {
   position: fixed;
   top: 0;
