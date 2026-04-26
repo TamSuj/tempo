@@ -436,6 +436,11 @@ async function init() {
   renderTotem(heroTotemEl, "ready");
   footerClock.textContent = fmtClock();
 
+  // Force a toolbar-icon resync the moment the popup opens so a stale
+  // green/blue/grey icon can never disagree with the dashboard UI.
+  // Fire-and-forget — UI rendering shouldn't block on icon repaint.
+  sendMessage({ type: "tempo:sync-icon" }).catch(() => {});
+
   try {
     const response = await sendMessage({ type: "tempo:get-popup-state" });
     if (!response?.ok || !response.authenticated) {
@@ -449,4 +454,4 @@ async function init() {
   }
 }
 
-init();
+document.addEventListener("DOMContentLoaded", init);

@@ -379,7 +379,9 @@ button {
 
 .dash-header {
   position: relative;
-  z-index: 1;
+  /* Must outrank .dash-body (z-index: 1) so the .account-menu it owns
+     can paint above hero cards while still trapped in this stacking ctx. */
+  z-index: 50;
   padding: 16px 18px 14px;
   display: flex;
   align-items: center;
@@ -448,14 +450,16 @@ button {
 }
 
 /* Account / Sign-out layer — full-popup overlay forced to the top layer
-   so the panel can never be buried by hero cards, totems, aurora, etc. */
+   so the panel can never be buried by hero cards, totems, aurora, etc.
+   z-index uses !important to defeat any parent stacking context that
+   might otherwise trap it (see .dash-header rules above). */
 .account-menu {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 9999;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 99999 !important;
   background: rgba(15, 23, 42, 0.32);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);

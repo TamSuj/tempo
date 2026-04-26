@@ -963,13 +963,22 @@ async function syncIconToState() {
       console.warn(`[icon] setIcon(${state}) failed:`, err?.message)
     );
 
+  // Stale-LAUNCHED_KEY purge: green icon is gated on a still-running event.
+  // If the stored end has passed (or end is missing/malformed), drop the key
+  // so the icon can fall through to ready/idle below instead of sticking green.
   const launched = await readStorageKey(LAUNCHED_KEY);
-  if (launched && Number.isFinite(launched.end) && Date.now() <= launched.end) {
+  const launchedStillActive =
+    launched && Number.isFinite(launched.end) && Date.now() <= launched.end;
+  if (launchedStillActive) {
     await applyIcon("active");
     return "active";
   }
   if (launched) {
-    await chrome.storage.local.remove(LAUNCHED_KEY).catch(() => {});
+    // Either expired (Date.now() > end) or malformed (no/NaN end) — clear it.
+    await chrome.storage.local.remove(LAUNCHED_KEY).catch((err) =>
+      console.warn("[icon] failed to clear stale LAUNCHED_KEY:", err?.message)
+    );
+    console.log("[icon] cleared stale LAUNCHED_KEY (event ended or malformed)");
   }
 
   let events;
@@ -1418,6 +1427,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (type === "tempo:has-history-permission") {
     hasHistoryPermission()
       .then((granted) => sendResponse({ ok: true, granted }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  // Popup-open icon resync: forces syncIconToState so a stale green icon
+  // (e.g. left over from a previous active event) is re-evaluated the
+  // moment the user opens the popup.
+  if (type === "tempo:sync-icon") {
+    syncIconToState()
+      .then((state) => sendResponse({ ok: true, state }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
